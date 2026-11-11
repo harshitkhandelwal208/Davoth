@@ -143,3 +143,63 @@ pub extern "c" fn g_signal_connect_data(
     destroy_data: ?*anyopaque,
     connect_flags: c_int,
 ) c_ulong;
+
+// --- zlib Bindings ---
+pub const z_stream = extern struct {
+    next_in: ?[*]const u8 = null,
+    avail_in: c_uint = 0,
+    total_in: c_ulong = 0,
+    next_out: ?[*]u8 = null,
+    avail_out: c_uint = 0,
+    total_out: c_ulong = 0,
+    msg: ?[*:0]const u8 = null,
+    state: ?*anyopaque = null,
+    zalloc: ?*anyopaque = null,
+    zfree: ?*anyopaque = null,
+    opaque_ptr: ?*anyopaque = null,
+    data_type: c_int = 0,
+    adler: c_ulong = 0,
+    reserved: c_ulong = 0,
+};
+
+pub const Z_OK: c_int = 0;
+pub const Z_STREAM_END: c_int = 1;
+pub const Z_NEED_DICT: c_int = 2;
+pub const Z_ERRNO: c_int = -1;
+pub const Z_STREAM_ERROR: c_int = -2;
+pub const Z_DATA_ERROR: c_int = -3;
+pub const Z_MEM_ERROR: c_int = -4;
+pub const Z_BUF_ERROR: c_int = -5;
+pub const Z_VERSION_ERROR: c_int = -6;
+
+pub const Z_NO_FLUSH: c_int = 0;
+pub const Z_FINISH: c_int = 4;
+
+pub extern "c" fn inflateInit2_(strm: *z_stream, windowBits: c_int, version: [*:0]const u8, stream_size: c_int) c_int;
+pub extern "c" fn inflate(strm: *z_stream, flush: c_int) c_int;
+pub extern "c" fn inflateEnd(strm: *z_stream) c_int;
+pub extern "c" fn zlibVersion() [*:0]const u8;
+
+pub fn decompressRawDeflate(allocator: std.mem.Allocator, compressed: []const u8, uncompressed_size: usize) ![]u8 {
+    var strm: z_stream = .{};
+    strm.next_in = compressed.ptr;
+    strm.avail_in = @intCast(compressed.len);
+
+    if (inflateInit2_(&strm, -15, zlibVersion(), @sizeOf(z_stream)) != Z_OK) {
+        return error.ZlibInitFailed;
+    }
+    defer _ = inflateEnd(&strm);
+
+    const out = try allocator.alloc(u8, uncompressed_size);
+    errdefer allocator.free(out);
+
+    strm.next_out = out.ptr;
+    strm.avail_out = @intCast(out.len);
+
+    const ret = inflate(&strm, Z_FINISH);
+    if (ret != Z_STREAM_END and ret != Z_OK) {
+        return error.ZlibDecompressFailed;
+    }
+
+    return out;
+}
