@@ -72,10 +72,14 @@ pub const VM = struct {
 
         // Try JIT compilation if hot and JIT is available
         if (self.jit) |jit_comp| {
-            if (self.invocation_count > 50) {
+            if (self.invocation_count >= jit_comp.compilation_threshold) {
                 if (jit_comp.compile(code)) |jit_fn| {
-                    const result = jit_fn();
-                    return JSValue.fromFloat64(result);
+                    const local_slots = try self.allocator.alloc(JSValue, code.local_names.items.len);
+                    defer self.allocator.free(local_slots);
+                    @memset(local_slots, JSValue.undefined_val);
+
+                    var temp_stack: [256]JSValue = undefined;
+                    return jit_fn(self, code, local_slots.ptr, &temp_stack);
                 } else |_| {}
             }
         }
