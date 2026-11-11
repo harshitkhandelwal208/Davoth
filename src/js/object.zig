@@ -104,6 +104,7 @@ pub const JSObject = struct {
     builtin_type: BuiltinType = .Normal,
     native_fn: ?NativeFn = null,
     native_ctx: ?*anyopaque = null,
+    code_block: ?*const anyopaque = null,
     is_marked: bool = false,
     next_gc: ?*JSObject = null,
 
@@ -116,6 +117,7 @@ pub const JSObject = struct {
             .builtin_type = .Normal,
             .native_fn = null,
             .native_ctx = null,
+            .code_block = null,
             .is_marked = false,
             .next_gc = null,
         };

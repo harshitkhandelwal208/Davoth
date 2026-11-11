@@ -50,6 +50,21 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
+        if (std.mem.eql(u8, cmd, "--test-wpt")) {
+            try runWpt(arena);
+            return;
+        }
+
+        if (std.mem.eql(u8, cmd, "--test-test262")) {
+            try runTest262(arena);
+            return;
+        }
+
+        if (std.mem.eql(u8, cmd, "--fuzz")) {
+            try runFuzzer(arena);
+            return;
+        }
+
         // URL passed directly: e.g. davoth https://davoth.org
         if (!std.mem.startsWith(u8, cmd, "-")) {
             try runBrowser(arena, cmd);
@@ -78,6 +93,9 @@ fn printHelp() void {
         \\  --test-bitwarden               Run native Bitwarden vault crypto and autofill tests
         \\  --test-adnauseam               Run AdNauseam WebExtensions integration tests
         \\  --bench-memory                 Run per-subsystem memory accounting benchmarks
+        \\  --test-wpt                     Run Web Platform Tests (WPT) compliance suite
+        \\  --test-test262                 Run Test262 ECMAScript conformance suite
+        \\  --fuzz                         Run parser and codec differential fuzzing harness
         \\
     ;
     std.debug.print("{s}", .{help_text});
@@ -286,4 +304,44 @@ fn runBrowser(allocator: std.mem.Allocator, initial_url: []const u8) !void {
     } else {
         std.debug.print("Running in headless display mode. Viewport rasterized to internal buffer.\n", .{});
     }
+}
+
+fn runWpt(allocator: std.mem.Allocator) !void {
+    var runner = try Davoth.tools.wpt_runner.WptRunner.init(allocator);
+    defer runner.deinit();
+    std.debug.print("Running Web Platform Tests (WPT) suite...\n", .{});
+    const stats = try runner.runAll();
+    std.debug.print("WPT Suite Completed: {d}/{d} passed, {d} failed\n", .{ stats.passed, stats.total, stats.failed });
+}
+
+fn runTest262(allocator: std.mem.Allocator) !void {
+    var runner = try Davoth.tools.test262_runner.Test262Runner.init(allocator);
+    defer runner.deinit();
+    std.debug.print("Running Test262 ECMAScript conformance suite...\n", .{});
+    const stats = try runner.runConformanceSuite();
+    std.debug.print("Test262 Suite Completed: {d}/{d} passed, {d} failed\n", .{ stats.passed, stats.total, stats.failed });
+}
+
+fn runFuzzer(allocator: std.mem.Allocator) !void {
+    var fuzzer = try Davoth.tools.fuzzer.Fuzzer.init(allocator, 0xcafe1234);
+    defer fuzzer.deinit();
+    std.debug.print("Fuzzing HTML parser...\n", .{});
+    const r1 = fuzzer.fuzzHtml(200);
+    std.debug.print("HTML Fuzz: {d} iterations, {d} crashes\n", .{ r1.iterations, r1.crashes });
+
+    std.debug.print("Fuzzing CSS parser...\n", .{});
+    const r2 = fuzzer.fuzzCss(200);
+    std.debug.print("CSS Fuzz: {d} iterations, {d} crashes\n", .{ r2.iterations, r2.crashes });
+
+    std.debug.print("Fuzzing JavaScript parser...\n", .{});
+    const r3 = fuzzer.fuzzJavaScript(200);
+    std.debug.print("JS Fuzz: {d} iterations, {d} crashes\n", .{ r3.iterations, r3.crashes });
+
+    std.debug.print("Fuzzing URL parser...\n", .{});
+    const r4 = fuzzer.fuzzUrl(200);
+    std.debug.print("URL Fuzz: {d} iterations, {d} crashes\n", .{ r4.iterations, r4.crashes });
+
+    std.debug.print("Fuzzing QUIC parser...\n", .{});
+    const r5 = fuzzer.fuzzQuic(200);
+    std.debug.print("QUIC Fuzz: {d} iterations, {d} crashes\n", .{ r5.iterations, r5.crashes });
 }

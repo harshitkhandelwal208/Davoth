@@ -181,6 +181,9 @@ pub const bitwarden = struct {
 pub const tools = struct {
     pub const adnauseam_updater = @import("tools/adnauseam_updater/updater.zig");
     pub const bitwarden_updater = @import("tools/bitwarden_updater/updater.zig");
+    pub const wpt_runner = @import("tools/wpt_runner.zig");
+    pub const test262_runner = @import("tools/test262_runner.zig");
+    pub const fuzzer = @import("tools/fuzzer.zig");
 };
 
 test "subsystem full verification" {

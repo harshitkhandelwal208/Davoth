@@ -117,6 +117,12 @@ pub const GtkWindow = opaque {};
 pub const GtkBox = opaque {};
 pub const GtkEntry = opaque {};
 pub const GApplication = opaque {};
+pub const GtkDrawingArea = opaque {};
+pub const cairo_t = opaque {};
+pub const cairo_surface_t = opaque {};
+
+pub const CAIRO_FORMAT_ARGB32: c_int = 0;
+pub const CAIRO_FORMAT_RGB24: c_int = 1;
 
 pub const GTK_ORIENTATION_VERTICAL: c_int = 1;
 pub const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
@@ -129,7 +135,27 @@ pub extern "c" fn gtk_window_set_default_size(window: ?*GtkWindow, width: c_int,
 pub extern "c" fn gtk_box_new(orientation: c_int, spacing: c_int) ?*GtkWidget;
 pub extern "c" fn gtk_entry_new() ?*GtkWidget;
 pub extern "c" fn gtk_widget_set_hexpand(widget: ?*GtkWidget, expand: c_int) void;
+pub extern "c" fn gtk_widget_set_vexpand(widget: ?*GtkWidget, expand: c_int) void;
 pub extern "c" fn gtk_entry_set_placeholder_text(entry: ?*GtkEntry, text: [*:0]const u8) void;
+pub extern "c" fn gtk_editable_get_text(editable: ?*anyopaque) [*:0]const u8;
+pub extern "c" fn gtk_drawing_area_new() ?*GtkWidget;
+pub extern "c" fn gtk_drawing_area_set_draw_func(
+    drawing_area: ?*GtkWidget,
+    draw_func: ?*const fn (?*GtkWidget, ?*cairo_t, c_int, c_int, ?*anyopaque) callconv(.c) void,
+    user_data: ?*anyopaque,
+    destroy: ?*anyopaque,
+) void;
+pub extern "c" fn gtk_widget_queue_draw(widget: ?*GtkWidget) void;
+pub extern "c" fn cairo_image_surface_create_for_data(
+    data: [*]u8,
+    format: c_int,
+    width: c_int,
+    height: c_int,
+    stride: c_int,
+) ?*cairo_surface_t;
+pub extern "c" fn cairo_set_source_surface(cr: ?*cairo_t, surface: ?*cairo_surface_t, x: f64, y: f64) void;
+pub extern "c" fn cairo_paint(cr: ?*cairo_t) void;
+pub extern "c" fn cairo_surface_destroy(surface: ?*cairo_surface_t) void;
 pub extern "c" fn gtk_window_set_child(window: ?*GtkWindow, child: ?*GtkWidget) void;
 pub extern "c" fn gtk_box_append(box: ?*GtkBox, child: ?*GtkWidget) void;
 pub extern "c" fn gtk_window_present(window: ?*GtkWindow) void;

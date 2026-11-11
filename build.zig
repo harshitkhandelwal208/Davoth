@@ -30,6 +30,7 @@ pub fn build(b: *std.Build) void {
         "gio-2.0",
         "glib-2.0",
         "z",
+        "cairo",
     };
 
     const mod = b.addModule("Davoth", .{

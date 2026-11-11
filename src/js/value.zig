@@ -23,13 +23,13 @@ pub const JSValue = packed struct(u64) {
     const TAG_MASK: u64 = 0xFFFF_0000_0000_0000;
     const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
-    const TAG_UNDEFINED: u64 = 0x7FF8_0001_0000_0000;
-    const TAG_NULL: u64 = 0x7FF8_0002_0000_0000;
-    const TAG_BOOL: u64 = 0x7FF8_0003_0000_0000;
-    const TAG_INT32: u64 = 0x7FF8_0004_0000_0000;
-    const TAG_STRING: u64 = 0x7FF8_0005_0000_0000;
-    const TAG_SYMBOL: u64 = 0x7FF8_0006_0000_0000;
-    const TAG_OBJECT: u64 = 0x7FF8_0007_0000_0000;
+    const TAG_UNDEFINED: u64 = 0xFFF9_0000_0000_0000;
+    const TAG_NULL: u64 = 0xFFFA_0000_0000_0000;
+    const TAG_BOOL: u64 = 0xFFFB_0000_0000_0000;
+    const TAG_INT32: u64 = 0xFFFC_0000_0000_0000;
+    const TAG_STRING: u64 = 0xFFFD_0000_0000_0000;
+    const TAG_SYMBOL: u64 = 0xFFFE_0000_0000_0000;
+    const TAG_OBJECT: u64 = 0xFFFF_0000_0000_0000;
 
     pub const undefined_val = JSValue{ .raw = TAG_UNDEFINED };
     pub const null_val = JSValue{ .raw = TAG_NULL };
@@ -44,7 +44,7 @@ pub const JSValue = packed struct(u64) {
     pub fn fromFloat64(val: f64) JSValue {
         const bits: u64 = @bitCast(val);
         // Canonicalize NaNs to prevent colliding with tagged values
-        if ((bits & QNAN_MASK) == QNAN_MASK) {
+        if ((bits & TAG_MASK) >= TAG_UNDEFINED) {
             return .{ .raw = QNAN_MASK };
         }
         return .{ .raw = bits };

@@ -37,6 +37,7 @@ pub const OpCode = enum(u8) {
     Dup = 28,
     Await = 29,
     Throw = 30,
+    CreateFunction = 31,
 };
 
 pub const CodeBlock = struct {
@@ -44,6 +45,7 @@ pub const CodeBlock = struct {
     instructions: std.ArrayList(u8),
     constants: std.ArrayList(JSValue),
     local_names: std.ArrayList([]const u8),
+    functions: std.ArrayList(*CodeBlock) = .empty,
     name: []const u8 = "main",
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8) CodeBlock {
@@ -52,11 +54,17 @@ pub const CodeBlock = struct {
             .instructions = .empty,
             .constants = .empty,
             .local_names = .empty,
+            .functions = .empty,
             .name = name,
         };
     }
 
     pub fn deinit(self: *CodeBlock) void {
+        for (self.functions.items) |f| {
+            f.deinit();
+            self.allocator.destroy(f);
+        }
+        self.functions.deinit(self.allocator);
         self.instructions.deinit(self.allocator);
         self.constants.deinit(self.allocator);
         self.local_names.deinit(self.allocator);
@@ -268,6 +276,44 @@ pub const BytecodeCompiler = struct {
                     std.mem.writeInt(i32, self.code.instructions.items[jump_patch_idx..][0..4], if_false_offset, .little);
                 }
             },
+            .While => |w| {
+                const loop_start_idx = self.code.instructions.items.len;
+                try self.compileNode(w.condition);
+                try self.code.emitOp(.JumpIfFalse);
+                const exit_patch_idx = self.code.instructions.items.len;
+                try self.code.emitI32(0); // placeholder for loop exit
+
+                try self.compileNode(w.body);
+
+                // Jump back to loop start
+                try self.code.emitOp(.Jump);
+                const jump_back_offset: i32 = @as(i32, @intCast(loop_start_idx)) - @as(i32, @intCast(self.code.instructions.items.len + 4));
+                try self.code.emitI32(jump_back_offset);
+
+                // Patch loop exit offset
+                const exit_offset: i32 = @intCast(self.code.instructions.items.len - (exit_patch_idx + 4));
+                std.mem.writeInt(i32, self.code.instructions.items[exit_patch_idx..][0..4], exit_offset, .little);
+            },
+            .For => |f| {
+                if (f.init) |i| try self.compileNode(i);
+                const loop_start_idx = self.code.instructions.items.len;
+                var exit_patch_idx: ?usize = null;
+                if (f.condition) |t| {
+                    try self.compileNode(t);
+                    try self.code.emitOp(.JumpIfFalse);
+                    exit_patch_idx = self.code.instructions.items.len;
+                    try self.code.emitI32(0);
+                }
+                try self.compileNode(f.body);
+                if (f.update) |u| try self.compileNode(u);
+                try self.code.emitOp(.Jump);
+                const jump_back_offset: i32 = @as(i32, @intCast(loop_start_idx)) - @as(i32, @intCast(self.code.instructions.items.len + 4));
+                try self.code.emitI32(jump_back_offset);
+                if (exit_patch_idx) |epi| {
+                    const exit_offset: i32 = @intCast(self.code.instructions.items.len - (epi + 4));
+                    std.mem.writeInt(i32, self.code.instructions.items[epi..][0..4], exit_offset, .little);
+                }
+            },
             .Return => |r| {
                 if (r) |val| {
                     try self.compileNode(val);
@@ -277,6 +323,34 @@ pub const BytecodeCompiler = struct {
                     try self.code.emitU16(c_idx);
                 }
                 try self.code.emitOp(.Return);
+            },
+            .FunctionDecl => |fd| {
+                const fn_block = try self.allocator.create(CodeBlock);
+                fn_block.* = CodeBlock.init(self.allocator, fd.name);
+                for (fd.params) |p| {
+                    _ = try fn_block.resolveOrAddLocal(p);
+                }
+
+                var fn_compiler = BytecodeCompiler{
+                    .allocator = self.allocator,
+                    .atom_table = self.atom_table,
+                    .code = fn_block.*,
+                };
+                try fn_compiler.compileNode(fd.body);
+                try fn_compiler.code.emitOp(.Return);
+                fn_block.* = fn_compiler.code;
+
+                const fn_idx: u16 = @truncate(self.code.functions.items.len);
+                try self.code.functions.append(self.allocator, fn_block);
+
+                try self.code.emitOp(.CreateFunction);
+                try self.code.emitU16(fn_idx);
+
+                if (fd.name.len > 0) {
+                    const slot = try self.code.resolveOrAddLocal(fd.name);
+                    try self.code.emitOp(.StoreLocal);
+                    try self.code.emitU16(slot);
+                }
             },
             else => {},
         }

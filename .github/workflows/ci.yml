@@ -1,0 +1,67 @@
+name: Davoth Browser CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libvulkan-dev \
+            libsqlite3-dev \
+            libssl-dev \
+            libfreetype-dev \
+            libharfbuzz-dev \
+            libcairo2-dev \
+            zlib1g-dev
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: master
+
+      - name: Build Davoth Browser
+        run: zig build
+
+      - name: Run Full Subsystem Test Suite
+        run: zig build test
+
+      - name: Verify CLI Engine & Version
+        run: ./zig-out/bin/davoth --version
+
+      - name: Verify JavaScript Engine & JIT
+        run: ./zig-out/bin/davoth --eval-js "let a = 120; let b = 280; return a + b;"
+
+      - name: Verify Subsystem Memory Accounting & PSS/USS Tracking
+        run: ./zig-out/bin/davoth --bench-memory
+
+      - name: Verify Native Bitwarden Protocol & Vault Crypto
+        run: ./zig-out/bin/davoth --test-bitwarden
+
+      - name: Verify AdNauseam WebExtensions & Synthetic Click Simulation
+        run: ./zig-out/bin/davoth --test-adnauseam
+
+      - name: Run Web Platform Tests (WPT) Suite
+        run: ./zig-out/bin/davoth --test-wpt
+
+      - name: Run Test262 ECMAScript Conformance Suite
+        run: ./zig-out/bin/davoth --test-test262
+
+      - name: Run Differential & Corpus Fuzzing Harness
+        run: ./zig-out/bin/davoth --fuzz
+
+      - name: Verify Layout, Reflow, Rasterization & Compositor Screenshot Capture
+        run: ./zig-out/bin/davoth --render "about:home" --screenshot /tmp/ci_screenshot.ppm

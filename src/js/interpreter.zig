@@ -88,11 +88,15 @@ pub const VM = struct {
         defer self.allocator.free(local_slots);
         @memset(local_slots, JSValue.undefined_val);
 
+        return self.executeWithLocals(code, local_slots);
+    }
+
+    pub fn executeWithLocals(self: *VM, code: *const CodeBlock, locals: []JSValue) !JSValue {
         if (self.frame_count >= self.frames.len) return error.CallStackOverflow;
         self.frames[self.frame_count] = CallFrame{
             .code = code,
             .ip = 0,
-            .locals = local_slots,
+            .locals = locals,
         };
         self.frame_count += 1;
         defer self.frame_count -= 1;
@@ -262,6 +266,15 @@ pub const VM = struct {
                         frame.ip = @intCast(new_ip);
                     }
                 },
+                .CreateFunction => {
+                    const fn_idx = std.mem.readInt(u16, instrs[frame.ip..][0..2], .little);
+                    frame.ip += 2;
+                    const fn_code = frame.code.functions.items[fn_idx];
+                    const fn_obj = try self.gc.allocateObject(null);
+                    fn_obj.builtin_type = .Function;
+                    fn_obj.code_block = fn_code;
+                    try self.push(JSValue.fromObject(fn_obj));
+                },
                 .Call => {
                     const arg_count = instrs[frame.ip];
                     frame.ip += 1;
@@ -276,6 +289,17 @@ pub const VM = struct {
                     if (callee.toObject()) |obj| {
                         if (obj.native_fn) |n_fn| {
                             const res = try n_fn(obj.native_ctx orelse @ptrCast(self), JSValue.undefined_val, args_buf[0..arg_count]);
+                            try self.push(res);
+                        } else if (obj.code_block) |cb_ptr| {
+                            const target_code: *const CodeBlock = @ptrCast(@alignCast(cb_ptr));
+                            const local_count = @max(target_code.local_names.items.len, @as(usize, arg_count));
+                            const locals_mem = try self.allocator.alloc(JSValue, local_count);
+                            defer self.allocator.free(locals_mem);
+                            @memset(locals_mem, JSValue.undefined_val);
+                            for (args_buf[0..arg_count], 0..) |arg, a_idx| {
+                                locals_mem[a_idx] = arg;
+                            }
+                            const res = try self.executeWithLocals(target_code, locals_mem);
                             try self.push(res);
                         } else {
                             try self.push(JSValue.undefined_val);

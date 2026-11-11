@@ -31,11 +31,14 @@ pub const URL = struct {
         // Parse scheme: [a-zA-Z][a-zA-Z0-9+.-]*:
         if (std.mem.indexOfScalar(u8, remaining, ':')) |colon_idx| {
             const scheme_candidate = remaining[0..colon_idx];
-            var is_valid_scheme = scheme_candidate.len > 0 and std.ascii.isAlphabetic(scheme_candidate[0]);
-            for (scheme_candidate[1..]) |c| {
-                if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '.' and c != '-') {
-                    is_valid_scheme = false;
-                    break;
+            var is_valid_scheme = false;
+            if (scheme_candidate.len > 0 and std.ascii.isAlphabetic(scheme_candidate[0])) {
+                is_valid_scheme = true;
+                for (scheme_candidate[1..]) |c| {
+                    if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '.' and c != '-') {
+                        is_valid_scheme = false;
+                        break;
+                    }
                 }
             }
             if (is_valid_scheme) {

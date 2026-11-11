@@ -161,16 +161,18 @@ pub const QuicPacketHeader = struct {
             const ptype: QuicPacketType = @enumFromInt(ptype_raw);
 
             var offset: usize = 5;
+            if (offset >= bytes.len) return error.PacketMalformed;
             const dcil = bytes[offset];
             offset += 1;
-            if (offset + dcil > bytes.len) return error.PacketMalformed;
+            if (dcil > 20 or offset + dcil > bytes.len) return error.PacketMalformed;
             var dcid = ConnectionId{ .len = dcil };
             @memcpy(dcid.bytes[0..dcil], bytes[offset..][0..dcil]);
             offset += dcil;
 
+            if (offset >= bytes.len) return error.PacketMalformed;
             const scil = bytes[offset];
             offset += 1;
-            if (offset + scil > bytes.len) return error.PacketMalformed;
+            if (scil > 20 or offset + scil > bytes.len) return error.PacketMalformed;
             var scid = ConnectionId{ .len = scil };
             @memcpy(scid.bytes[0..scil], bytes[offset..][0..scil]);
             offset += scil;

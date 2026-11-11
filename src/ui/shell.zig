@@ -1,4 +1,4 @@
-//! Browser Shell orchestrating tabs, navigation, rendering, and extensions.
+//! Browser Shell orchestrating tabs, navigation, DOM, JavaScript VM, rendering, and extensions.
 const std = @import("std");
 const TabManager = @import("tabs.zig").TabManager;
 const UrlBar = @import("urlbar.zig").UrlBar;
@@ -18,6 +18,12 @@ const Vault = @import("../components/bitwarden/vault.zig").Vault;
 const HistoryStore = @import("../storage/history.zig").HistoryStore;
 const HttpClient = @import("../net/http1.zig").HttpClient;
 const fs = @import("../common/fs.zig");
+const GarbageCollector = @import("../js/gc.zig").GarbageCollector;
+const VM = @import("../js/interpreter.zig").VM;
+const JSValue = @import("../js/value.zig").JSValue;
+const Parser = @import("../js/parser.zig").Parser;
+const BytecodeCompiler = @import("../js/bytecode.zig").BytecodeCompiler;
+const JITCompiler = @import("../js/jit.zig").JITCompiler;
 
 pub const BrowserShell = struct {
     allocator: std.mem.Allocator,
@@ -30,14 +36,21 @@ pub const BrowserShell = struct {
     http_client: HttpClient,
     rasterizer: SoftwareRasterizer,
     compositor: Compositor,
+    gc: *GarbageCollector,
+    vm: *VM,
+    jit: ?*JITCompiler,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) !*BrowserShell {
         const shell = try allocator.create(BrowserShell);
         const table = try AtomTable.init(allocator);
         const style_eng = try StyleEngine.init(allocator, table);
         const hist = try HistoryStore.initInMemory(allocator);
-        var raster = try SoftwareRasterizer.init(allocator, width, height);
-        const comp = Compositor.init(raster.backend());
+
+        const gc = try GarbageCollector.init(allocator);
+        const vm = try VM.init(allocator, table, gc);
+        const jit = try allocator.create(JITCompiler);
+        jit.* = JITCompiler.init(allocator);
+        vm.jit = jit;
 
         shell.* = .{
             .allocator = allocator,
@@ -48,9 +61,13 @@ pub const BrowserShell = struct {
             .vault = Vault.init(allocator),
             .history_store = hist,
             .http_client = HttpClient.init(allocator),
-            .rasterizer = raster,
-            .compositor = comp,
+            .rasterizer = try SoftwareRasterizer.init(allocator, width, height),
+            .compositor = undefined,
+            .gc = gc,
+            .vm = vm,
+            .jit = jit,
         };
+        shell.compositor = Compositor.init(shell.rasterizer.backend());
 
         // Open initial home tab
         _ = try shell.tab_manager.newTab("about:home", "Davoth Home", .Default);
@@ -58,6 +75,12 @@ pub const BrowserShell = struct {
     }
 
     pub fn deinit(self: *BrowserShell) void {
+        if (self.jit) |j| {
+            j.deinit();
+            self.allocator.destroy(j);
+        }
+        self.vm.deinit();
+        self.gc.deinit();
         self.tab_manager.deinit();
         self.style_engine.deinit();
         self.extension_manager.deinit();
@@ -67,6 +90,48 @@ pub const BrowserShell = struct {
         self.rasterizer.deinit();
         self.atom_table.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn evalScript(self: *BrowserShell, js_src: []const u8) !JSValue {
+        var parser = Parser.init(self.allocator, js_src);
+        const ast = try parser.parseProgram();
+        defer ast.deinit(self.allocator);
+
+        var compiler = BytecodeCompiler.init(self.allocator, self.atom_table, "script");
+        var code = try compiler.compile(ast);
+        defer code.deinit();
+
+        return try self.vm.execute(&code);
+    }
+
+    fn executeInlineScripts(self: *BrowserShell, node: *Node) void {
+        if (node.node_type == .Element) {
+            const script_atom = self.atom_table.intern("script") catch return;
+            if (node.tag_name == script_atom) {
+                var code_text: ?[]const u8 = null;
+                if (node.text_content) |t| {
+                    code_text = t;
+                } else if (node.first_child) |fc| {
+                    if (fc.node_type == .Text and fc.text_content != null) {
+                        code_text = fc.text_content;
+                    }
+                }
+
+                if (code_text) |src| {
+                    if (src.len > 0) {
+                        _ = self.evalScript(src) catch |err| {
+                            std.debug.print("Embedded script execution error: {any}\n", .{err});
+                        };
+                    }
+                }
+            }
+        }
+
+        var curr = node.first_child;
+        while (curr) |child| {
+            self.executeInlineScripts(child);
+            curr = child.next_sibling;
+        }
     }
 
     pub fn navigate(self: *BrowserShell, input_url: []const u8) !void {
@@ -96,6 +161,7 @@ pub const BrowserShell = struct {
                 \\      <h1>Davoth Browser</h1>
                 \\      <p>Independent, secure, memory-efficient browser built from scratch in Zig 0.17.1</p>
                 \\    </div>
+                \\    <script>let status = "Davoth Engine Active";</script>
                 \\  </body>
                 \\</html>
             ;
@@ -116,6 +182,9 @@ pub const BrowserShell = struct {
 
         const doc = try builder.parse();
         defer doc.deinit(self.allocator);
+
+        // Execute inline script tags
+        self.executeInlineScripts(doc);
 
         // Inject content scripts
         self.extension_manager.injectContentScripts(effective_url, doc);
@@ -138,16 +207,25 @@ pub const BrowserShell = struct {
             self.compositor.composite(&dlist, null);
         }
 
+        // Update active tab URL
+        if (self.tab_manager.activeTab()) |tab| {
+            self.allocator.free(tab.url);
+            tab.url = try self.allocator.dupe(u8, effective_url);
+        }
+
         // Record history
         try self.history_store.addVisit(effective_url, "Web Page");
     }
 };
 
-test "browser shell initialization and navigation" {
+test "browser shell initialization, navigation, and script execution" {
     const allocator = std.testing.allocator;
     const shell = try BrowserShell.init(allocator, 800, 600);
     defer shell.deinit();
 
     try shell.navigate("about:home");
     try std.testing.expectEqual(@as(usize, 1), shell.tab_manager.tabs.items.len);
+
+    const val = try shell.evalScript("let x = 10; let y = 20; return x + y;");
+    try std.testing.expectEqual(@as(f64, 30.0), val.toFloat64());
 }
