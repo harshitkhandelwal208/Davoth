@@ -1,8 +1,10 @@
-//! HTTP/1.1 client with keep-alive, chunked transfer decoding, and header parsing.
+//! HTTP/1.1 client with keep-alive, chunked transfer decoding, cookie management, redirects, and decompression.
 const std = @import("std");
 const URL = @import("../common/url.zig").URL;
 const TLSStream = @import("tls.zig").TLSStream;
 const DnsResolver = @import("dns.zig").DnsResolver;
+const CookieJar = @import("cookies.zig").CookieJar;
+const c = @import("../common/c.zig");
 
 pub const Response = struct {
     allocator: std.mem.Allocator,
@@ -24,45 +26,105 @@ pub const Response = struct {
 pub const HttpClient = struct {
     allocator: std.mem.Allocator,
     dns: DnsResolver,
+    cookies: CookieJar,
 
     pub fn init(allocator: std.mem.Allocator) HttpClient {
         return .{
             .allocator = allocator,
             .dns = DnsResolver.init(allocator),
+            .cookies = CookieJar.init(allocator),
         };
     }
 
     pub fn deinit(self: *HttpClient) void {
         self.dns.deinit();
+        self.cookies.deinit();
     }
 
     pub fn get(self: *HttpClient, url_str: []const u8) !Response {
-        var url = try URL.parse(self.allocator, url_str);
-        defer url.deinit();
+        return self.getWithRedirects(url_str, 5);
+    }
 
+    pub fn getWithRedirects(self: *HttpClient, url_str: []const u8, max_redirects: usize) !Response {
+        var current_url = try self.allocator.dupe(u8, url_str);
+        defer self.allocator.free(current_url);
+        var redirects_left = max_redirects;
+
+        while (true) {
+            var url = try URL.parse(self.allocator, current_url);
+            defer url.deinit();
+
+            var resp = try self.fetchOnce(&url);
+            errdefer resp.deinit();
+
+            // Store any Set-Cookie headers into cookie jar
+            if (resp.headers.get("set-cookie")) |sc| {
+                self.cookies.setCookie(sc, &url) catch {};
+            }
+
+            // Check for redirects: 301, 302, 303, 307, 308
+            if (resp.status_code == 301 or resp.status_code == 302 or resp.status_code == 303 or
+                resp.status_code == 307 or resp.status_code == 308)
+            {
+                if (redirects_left > 0) {
+                    if (resp.headers.get("location")) |loc| {
+                        redirects_left -= 1;
+                        var resolved = try url.resolve(self.allocator, loc);
+                        defer resolved.deinit();
+                        const next_url_str = try resolved.serialize(self.allocator);
+                        self.allocator.free(current_url);
+                        current_url = next_url_str;
+                        resp.deinit();
+                        continue;
+                    }
+                }
+            }
+
+            // Handle decompression (gzip / deflate)
+            if (resp.headers.get("content-encoding")) |ce| {
+                if (std.ascii.eqlIgnoreCase(ce, "gzip") or std.ascii.eqlIgnoreCase(ce, "deflate")) {
+                    const decompressed = c.decompressGzipOrDeflate(self.allocator, resp.body) catch null;
+                    if (decompressed) |decomp| {
+                        self.allocator.free(resp.body);
+                        resp.body = decomp;
+                    }
+                }
+            }
+
+            return resp;
+        }
+    }
+
+    pub fn fetchOnce(self: *HttpClient, url: *const URL) !Response {
         const ip = try self.dns.resolve(url.host);
+
+        var req_buf: std.ArrayList(u8) = .empty;
+        defer req_buf.deinit(self.allocator);
+
+        try req_buf.appendSlice(self.allocator, "GET ");
+        try req_buf.appendSlice(self.allocator, url.path);
+        if (url.query) |q| {
+            try req_buf.append(self.allocator, '?');
+            try req_buf.appendSlice(self.allocator, q);
+        }
+        try req_buf.appendSlice(self.allocator, " HTTP/1.1\r\nHost: ");
+        try req_buf.appendSlice(self.allocator, url.host);
+        try req_buf.appendSlice(self.allocator, "\r\nUser-Agent: Davoth/1.0 (X11; Linux x86_64)\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Encoding: gzip, deflate\r\nConnection: close\r\n");
+
+        if (try self.cookies.getCookieHeader(url)) |cookie_header| {
+            defer self.allocator.free(cookie_header);
+            try req_buf.appendSlice(self.allocator, "Cookie: ");
+            try req_buf.appendSlice(self.allocator, cookie_header);
+            try req_buf.appendSlice(self.allocator, "\r\n");
+        }
+        try req_buf.appendSlice(self.allocator, "\r\n");
 
         if (std.mem.eql(u8, url.scheme, "https")) {
             var tls = try TLSStream.connect(url.host, url.port, ip);
             defer tls.close();
 
-            // Send HTTP request
-            var req_buf: std.ArrayList(u8) = .empty;
-            defer req_buf.deinit(self.allocator);
-
-            try req_buf.appendSlice(self.allocator, "GET ");
-            try req_buf.appendSlice(self.allocator, url.path);
-            if (url.query) |q| {
-                try req_buf.append(self.allocator, '?');
-                try req_buf.appendSlice(self.allocator, q);
-            }
-            try req_buf.appendSlice(self.allocator, " HTTP/1.1\r\nHost: ");
-            try req_buf.appendSlice(self.allocator, url.host);
-            try req_buf.appendSlice(self.allocator, "\r\nUser-Agent: Davoth/1.0 (X11; Linux x86_64)\r\nAccept: text/html,*/*\r\nConnection: close\r\n\r\n");
-
             _ = try tls.write(req_buf.items);
 
-            // Read response
             var resp_bytes: std.ArrayList(u8) = .empty;
             defer resp_bytes.deinit(self.allocator);
 
@@ -95,15 +157,6 @@ pub const HttpClient = struct {
                 return error.ConnectionFailed;
             }
 
-            var req_buf: std.ArrayList(u8) = .empty;
-            defer req_buf.deinit(self.allocator);
-
-            try req_buf.appendSlice(self.allocator, "GET ");
-            try req_buf.appendSlice(self.allocator, url.path);
-            try req_buf.appendSlice(self.allocator, " HTTP/1.1\r\nHost: ");
-            try req_buf.appendSlice(self.allocator, url.host);
-            try req_buf.appendSlice(self.allocator, "\r\nUser-Agent: Davoth/1.0\r\nConnection: close\r\n\r\n");
-
             _ = std.c.write(sock_fd, req_buf.items.ptr, req_buf.items.len);
 
             var resp_bytes: std.ArrayList(u8) = .empty;
@@ -135,7 +188,14 @@ pub const HttpClient = struct {
         const status_code = try std.fmt.parseInt(u16, code_str, 10);
 
         var headers = std.StringHashMap([]const u8).init(self.allocator);
-        errdefer headers.deinit();
+        errdefer {
+            var it = headers.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            headers.deinit();
+        }
 
         while (lines.next()) |line| {
             if (std.mem.indexOfScalar(u8, line, ':')) |colon| {
@@ -143,9 +203,14 @@ pub const HttpClient = struct {
                 const val = std.mem.trim(u8, line[colon + 1 ..], " \t");
 
                 const key_lower = try self.allocator.dupe(u8, key);
-                for (key_lower) |*c| c.* = std.ascii.toLower(c.*);
+                for (key_lower) |*c_ptr| c_ptr.* = std.ascii.toLower(c_ptr.*);
 
-                try headers.put(key_lower, try self.allocator.dupe(u8, val));
+                const val_dup = try self.allocator.dupe(u8, val);
+
+                if (try headers.fetchPut(key_lower, val_dup)) |prev| {
+                    self.allocator.free(prev.key);
+                    self.allocator.free(prev.value);
+                }
             }
         }
 
@@ -211,4 +276,28 @@ test "parse http response and headers" {
     try std.testing.expectEqual(@as(u16, 200), resp.status_code);
     try std.testing.expectEqualStrings("<h1>Hello</h1>", resp.body);
     try std.testing.expect(resp.headers.get("content-type") != null);
+}
+
+test "cookie persistence and gzip decompression pipeline in http client" {
+    const allocator = std.testing.allocator;
+    var client = HttpClient.init(allocator);
+    defer client.deinit();
+
+    var target_url = try URL.parse(allocator, "https://example.com/login");
+    defer target_url.deinit();
+
+    // Verify Set-Cookie parsing
+    try client.cookies.setCookie("auth_token=supersecret123; Secure; HttpOnly", &target_url);
+    const cookie_hdr = (try client.cookies.getCookieHeader(&target_url)).?;
+    defer allocator.free(cookie_hdr);
+    try std.testing.expectEqualStrings("auth_token=supersecret123", cookie_hdr);
+
+    // Verify compressed body decompression
+    const raw_body = "Davoth Engine Compressed Payload Response Body";
+    const compressed = try c.compressGzip(allocator, raw_body);
+    defer allocator.free(compressed);
+
+    const decompressed = try c.decompressGzipOrDeflate(allocator, compressed);
+    defer allocator.free(decompressed);
+    try std.testing.expectEqualStrings(raw_body, decompressed);
 }

@@ -131,8 +131,13 @@ pub const BytecodeCompiler = struct {
     fn compileNode(self: *BytecodeCompiler, node: *Node) anyerror!void {
         switch (node.data) {
             .Program => |stmts| {
-                for (stmts) |stmt| {
-                    try self.compileNode(stmt);
+                for (stmts, 0..) |stmt, i| {
+                    const is_last = (i == stmts.len - 1);
+                    if (is_last and stmt.data == .ExprStatement) {
+                        try self.compileNode(stmt.data.ExprStatement);
+                    } else {
+                        try self.compileNode(stmt);
+                    }
                 }
             },
             .NumberLiteral => |num| {
@@ -348,8 +353,13 @@ pub const BytecodeCompiler = struct {
 
                 if (fd.name.len > 0) {
                     const slot = try self.code.resolveOrAddLocal(fd.name);
+                    try self.code.emitOp(.Dup);
                     try self.code.emitOp(.StoreLocal);
                     try self.code.emitU16(slot);
+
+                    const atom = try self.atom_table.intern(fd.name);
+                    try self.code.emitOp(.StoreGlobal);
+                    try self.code.emitU16(@truncate(atom.toU32()));
                 }
             },
             else => {},

@@ -137,7 +137,7 @@ pub const CookieJar = struct {
             return null;
         }
 
-        return list.toOwnedSlice(self.allocator);
+        return try list.toOwnedSlice(self.allocator);
     }
 };
 

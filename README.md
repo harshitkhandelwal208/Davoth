@@ -84,6 +84,15 @@ zig build test --summary all
 # Render a page and capture viewport to a 24-bit PPM image
 ./zig-out/bin/davoth --render about:home --screenshot /tmp/davoth_home.ppm
 
+# Run Web Platform Tests (WPT) automated compliance suite
+./zig-out/bin/davoth --test-wpt
+
+# Run Test262 ECMAScript standard conformance suite
+./zig-out/bin/davoth --test-test262
+
+# Run multi-target differential fuzzing harness (HTML, CSS, JS, URL, QUIC)
+./zig-out/bin/davoth --fuzz
+
 # Run native Bitwarden vault crypto, PBKDF2, and autofill verification
 ./zig-out/bin/davoth --test-bitwarden
 

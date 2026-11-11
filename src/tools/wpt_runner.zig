@@ -116,6 +116,19 @@ pub const WptRunner = struct {
             ".flex-row { display: flex; flex-direction: row; justify-content: space-between; }",
         );
 
+        // Test 6: HTML5 forms and input controls
+        try self.testHtmlParsing(
+            "html/semantics/forms/form-submission-controls",
+            "<form action='/search'><input name='q' type='text'><button type='submit'>Search</button></form>",
+            "button",
+        );
+
+        // Test 7: CSS Grid template properties
+        try self.testCssCascade(
+            "css/css-grid/grid-template-columns",
+            ".grid-layout { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }",
+        );
+
         var passed: usize = 0;
         var failed: usize = 0;
         for (self.results.items) |r| {

@@ -123,6 +123,27 @@ pub const Test262Runner = struct {
             99.0,
         );
 
+        // ch12: For statement iteration
+        _ = try self.runTestCase(
+            "test262/ch12/12.6.3-for-statement",
+            "let acc = 0; for (let j = 0; j < 5; j = j + 1) { acc = acc + j; } return acc;",
+            10.0,
+        );
+
+        // ch13: Nested function execution
+        _ = try self.runTestCase(
+            "test262/ch13/13.2-nested-function-calls",
+            "function outer(a) { function inner(b) { return b * 2; } return inner(a) + 10; } return outer(15);",
+            40.0,
+        );
+
+        // ch13: Recursive function calls (Fibonacci)
+        _ = try self.runTestCase(
+            "test262/ch13/13.3-recursive-function-fibonacci",
+            "function fib(n) { if (n <= 1) return n; return fib(n-1) + fib(n-2); } return fib(10);",
+            55.0,
+        );
+
         var passed: usize = 0;
         var failed: usize = 0;
         for (self.results.items) |r| {

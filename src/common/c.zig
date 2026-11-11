@@ -200,10 +200,16 @@ pub const Z_VERSION_ERROR: c_int = -6;
 
 pub const Z_NO_FLUSH: c_int = 0;
 pub const Z_FINISH: c_int = 4;
+pub const Z_DEFLATED: c_int = 8;
+pub const Z_DEFAULT_COMPRESSION: c_int = -1;
+pub const Z_DEFAULT_STRATEGY: c_int = 0;
 
 pub extern "c" fn inflateInit2_(strm: *z_stream, windowBits: c_int, version: [*:0]const u8, stream_size: c_int) c_int;
 pub extern "c" fn inflate(strm: *z_stream, flush: c_int) c_int;
 pub extern "c" fn inflateEnd(strm: *z_stream) c_int;
+pub extern "c" fn deflateInit2_(strm: *z_stream, level: c_int, method: c_int, windowBits: c_int, memLevel: c_int, strategy: c_int, version: [*:0]const u8, stream_size: c_int) c_int;
+pub extern "c" fn deflate(strm: *z_stream, flush: c_int) c_int;
+pub extern "c" fn deflateEnd(strm: *z_stream) c_int;
 pub extern "c" fn zlibVersion() [*:0]const u8;
 
 pub fn decompressRawDeflate(allocator: std.mem.Allocator, compressed: []const u8, uncompressed_size: usize) ![]u8 {
@@ -228,4 +234,95 @@ pub fn decompressRawDeflate(allocator: std.mem.Allocator, compressed: []const u8
     }
 
     return out;
+}
+
+pub fn decompressGzipOrDeflate(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
+    if (compressed.len == 0) return try allocator.alloc(u8, 0);
+
+    var strm: z_stream = .{};
+    strm.next_in = compressed.ptr;
+    strm.avail_in = @intCast(compressed.len);
+
+    // 47 = 32 + 15 enables zlib and gzip decoding with automatic header detection
+    var init_res = inflateInit2_(&strm, 47, zlibVersion(), @sizeOf(z_stream));
+    if (init_res != Z_OK) {
+        // Fallback to raw deflate (-15) if headerless
+        init_res = inflateInit2_(&strm, -15, zlibVersion(), @sizeOf(z_stream));
+        if (init_res != Z_OK) {
+            return error.ZlibInitFailed;
+        }
+    }
+    defer _ = inflateEnd(&strm);
+
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+
+    var chunk: [8192]u8 = undefined;
+    while (true) {
+        strm.next_out = &chunk;
+        strm.avail_out = chunk.len;
+
+        const ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK and ret != Z_STREAM_END and ret != Z_BUF_ERROR) {
+            return error.ZlibDecompressFailed;
+        }
+
+        const produced = chunk.len - strm.avail_out;
+        if (produced > 0) {
+            try list.appendSlice(allocator, chunk[0..produced]);
+        }
+
+        if (ret == Z_STREAM_END) break;
+        if (strm.avail_in == 0 and produced == 0) break;
+    }
+
+    return list.toOwnedSlice(allocator);
+}
+
+pub fn compressGzip(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    var strm: z_stream = .{};
+    strm.next_in = data.ptr;
+    strm.avail_in = @intCast(data.len);
+
+    // 31 = 16 + 15 gzip format
+    if (deflateInit2_(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY, zlibVersion(), @sizeOf(z_stream)) != Z_OK) {
+        return error.ZlibInitFailed;
+    }
+    defer _ = deflateEnd(&strm);
+
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+
+    var chunk: [8192]u8 = undefined;
+    while (true) {
+        strm.next_out = &chunk;
+        strm.avail_out = chunk.len;
+
+        const ret = deflate(&strm, Z_FINISH);
+        if (ret != Z_OK and ret != Z_STREAM_END and ret != Z_BUF_ERROR) {
+            return error.ZlibCompressFailed;
+        }
+
+        const produced = chunk.len - strm.avail_out;
+        if (produced > 0) {
+            try list.appendSlice(allocator, chunk[0..produced]);
+        }
+
+        if (ret == Z_STREAM_END) break;
+    }
+
+    return list.toOwnedSlice(allocator);
+}
+
+test "compress and decompress gzip payload" {
+    const allocator = std.testing.allocator;
+    const original = "Davoth Web Browser Engine - High Performance Compressed Network Stream";
+
+    const compressed = try compressGzip(allocator, original);
+    defer allocator.free(compressed);
+
+    const decompressed = try decompressGzipOrDeflate(allocator, compressed);
+    defer allocator.free(decompressed);
+
+    try std.testing.expectEqualStrings(original, decompressed);
 }

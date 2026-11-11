@@ -6,16 +6,33 @@ const JSValue = @import("value.zig").JSValue;
 const JSObject = @import("object.zig").JSObject;
 const VM = @import("interpreter.zig").VM;
 
+var timer_counter: i32 = 1;
+
 pub fn initBuiltins(vm: *VM) !void {
     const table = vm.atom_table;
     const alloc = vm.allocator;
     const global = vm.global_object;
+
+    // window and globalThis self-references
+    const window_atom = try table.intern("window");
+    try global.setProperty(alloc, window_atom, JSValue.fromObject(global));
+
+    const global_this_atom = try table.intern("globalThis");
+    try global.setProperty(alloc, global_this_atom, JSValue.fromObject(global));
 
     // console object
     const console_obj = try vm.gc.allocateObject(null);
     const log_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeConsoleLog, @ptrCast(vm));
     const log_atom = try table.intern("log");
     try console_obj.setProperty(alloc, log_atom, JSValue.fromObject(log_fn));
+
+    const warn_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeConsoleWarn, @ptrCast(vm));
+    const warn_atom = try table.intern("warn");
+    try console_obj.setProperty(alloc, warn_atom, JSValue.fromObject(warn_fn));
+
+    const error_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeConsoleError, @ptrCast(vm));
+    const error_atom = try table.intern("error");
+    try console_obj.setProperty(alloc, error_atom, JSValue.fromObject(error_fn));
 
     const console_atom = try table.intern("console");
     try global.setProperty(alloc, console_atom, JSValue.fromObject(console_obj));
@@ -39,6 +56,37 @@ pub fn initBuiltins(vm: *VM) !void {
 
     const math_atom = try table.intern("Math");
     try global.setProperty(alloc, math_atom, JSValue.fromObject(math_obj));
+
+    // Timers: setTimeout, clearTimeout, setInterval, clearInterval
+    const set_timeout_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeSetTimeout, null);
+    try global.setProperty(alloc, try table.intern("setTimeout"), JSValue.fromObject(set_timeout_fn));
+
+    const clear_timeout_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeClearTimeout, null);
+    try global.setProperty(alloc, try table.intern("clearTimeout"), JSValue.fromObject(clear_timeout_fn));
+
+    const set_interval_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeSetTimeout, null);
+    try global.setProperty(alloc, try table.intern("setInterval"), JSValue.fromObject(set_interval_fn));
+
+    const clear_interval_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeClearTimeout, null);
+    try global.setProperty(alloc, try table.intern("clearInterval"), JSValue.fromObject(clear_interval_fn));
+
+    // Web Storage: localStorage & sessionStorage
+    const storage_obj = try vm.gc.allocateObject(null);
+    const set_item_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeStorageSetItem, @ptrCast(vm));
+    try storage_obj.setProperty(alloc, try table.intern("setItem"), JSValue.fromObject(set_item_fn));
+
+    const get_item_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeStorageGetItem, @ptrCast(vm));
+    try storage_obj.setProperty(alloc, try table.intern("getItem"), JSValue.fromObject(get_item_fn));
+
+    const remove_item_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeStorageRemoveItem, @ptrCast(vm));
+    try storage_obj.setProperty(alloc, try table.intern("removeItem"), JSValue.fromObject(remove_item_fn));
+
+    try global.setProperty(alloc, try table.intern("localStorage"), JSValue.fromObject(storage_obj));
+    try global.setProperty(alloc, try table.intern("sessionStorage"), JSValue.fromObject(storage_obj));
+
+    // Fetch API
+    const fetch_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeFetch, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("fetch"), JSValue.fromObject(fetch_fn));
 
     // Global utility functions
     const parse_int_fn = try JSObject.createFunction(alloc, vm.gc.root_shape, null, nativeParseInt, null);
@@ -66,6 +114,80 @@ fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!J
     }
     std.debug.print("\n", .{});
     return JSValue.undefined_val;
+}
+
+fn nativeConsoleWarn(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    return nativeConsoleLog(ctx, this_val, args);
+}
+
+fn nativeConsoleError(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    return nativeConsoleLog(ctx, this_val, args);
+}
+
+fn nativeSetTimeout(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const id = timer_counter;
+    timer_counter += 1;
+    return JSValue.fromInt32(id);
+}
+
+fn nativeClearTimeout(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeStorageSetItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len < 2) return JSValue.undefined_val;
+    const target = this_val.toObject() orelse return JSValue.undefined_val;
+
+    var key_buf: [128]u8 = undefined;
+    const key_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&key_buf, "{d}", .{args[0].toInt32()}) catch "0",
+        else => "key",
+    };
+    const key_atom = try vm.atom_table.intern(key_str);
+    try target.setProperty(vm.allocator, key_atom, args[1]);
+    return JSValue.undefined_val;
+}
+
+fn nativeStorageGetItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.null_val;
+    const target = this_val.toObject() orelse return JSValue.null_val;
+
+    var key_buf: [128]u8 = undefined;
+    const key_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&key_buf, "{d}", .{args[0].toInt32()}) catch "0",
+        else => "key",
+    };
+    const key_atom = vm.atom_table.map.get(key_str) orelse return JSValue.null_val;
+    return target.getProperty(key_atom) orelse JSValue.null_val;
+}
+
+fn nativeStorageRemoveItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+    const target = this_val.toObject() orelse return JSValue.undefined_val;
+
+    const key_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.undefined_val,
+    };
+    const key_atom = vm.atom_table.map.get(key_str) orelse return JSValue.undefined_val;
+    try target.setProperty(vm.allocator, key_atom, JSValue.null_val);
+    return JSValue.undefined_val;
+}
+
+fn nativeFetch(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const resp_obj = try vm.gc.allocateObject(null);
+    try resp_obj.setProperty(vm.allocator, try vm.atom_table.intern("status"), JSValue.fromInt32(200));
+    try resp_obj.setProperty(vm.allocator, try vm.atom_table.intern("ok"), JSValue.true_val);
+
+    const ok_atom = try vm.atom_table.intern("OK");
+    try resp_obj.setProperty(vm.allocator, try vm.atom_table.intern("statusText"), JSValue.fromStringAtom(ok_atom));
+    return JSValue.fromObject(resp_obj);
 }
 
 fn nativeMathFloor(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -106,6 +228,11 @@ test "builtins installation and execution" {
 
     try initBuiltins(vm);
 
+    // Verify window and globalThis
+    const win_val = vm.global_object.getProperty(try atom_table.intern("window")).?;
+    try std.testing.expect(win_val.isObject());
+    try std.testing.expectEqual(vm.global_object, win_val.toObject().?);
+
     const math_atom = try atom_table.intern("Math");
     const math_val = vm.global_object.getProperty(math_atom).?;
     try std.testing.expect(math_val.isObject());
@@ -113,4 +240,26 @@ test "builtins installation and execution" {
     const pi_atom = try atom_table.intern("PI");
     const pi_val = math_val.toObject().?.getProperty(pi_atom).?;
     try std.testing.expectApproxEqAbs(std.math.pi, pi_val.toFloat64(), 0.0001);
+
+    // Verify localStorage set and get
+    const storage_atom = try atom_table.intern("localStorage");
+    const storage_val = vm.global_object.getProperty(storage_atom).?;
+    const storage_obj = storage_val.toObject().?;
+
+    const set_item_fn = storage_obj.getProperty(try atom_table.intern("setItem")).?.toObject().?;
+    const get_item_fn = storage_obj.getProperty(try atom_table.intern("getItem")).?.toObject().?;
+
+    const key_atom = try atom_table.intern("username");
+    const val_atom = try atom_table.intern("DavothUser");
+
+    _ = try set_item_fn.native_fn.?(set_item_fn.native_ctx.?, storage_val, &[_]JSValue{
+        JSValue.fromStringAtom(key_atom),
+        JSValue.fromStringAtom(val_atom),
+    });
+
+    const retrieved = try get_item_fn.native_fn.?(get_item_fn.native_ctx.?, storage_val, &[_]JSValue{
+        JSValue.fromStringAtom(key_atom),
+    });
+    try std.testing.expect(retrieved.isString());
+    try std.testing.expectEqual(val_atom, retrieved.toStringAtom());
 }

@@ -158,6 +158,38 @@ pub const Node = struct {
         return self.findFirst(id_atom, id);
     }
 
+    pub fn addEventListener(
+        self: *Node,
+        allocator: std.mem.Allocator,
+        event_type: AtomId,
+        callback: *const fn (ctx: *anyopaque, event: *anyopaque) void,
+        ctx: *anyopaque,
+        use_capture: bool,
+    ) !void {
+        try self.listeners.append(allocator, .{
+            .event_type = event_type,
+            .callback = callback,
+            .ctx = ctx,
+            .use_capture = use_capture,
+        });
+    }
+
+    pub fn removeEventListener(
+        self: *Node,
+        event_type: AtomId,
+        callback: *const fn (ctx: *anyopaque, event: *anyopaque) void,
+    ) void {
+        var i: usize = 0;
+        while (i < self.listeners.items.len) {
+            const item = self.listeners.items[i];
+            if (item.event_type == event_type and item.callback == callback) {
+                _ = self.listeners.swapRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn findFirst(self: *Node, id_atom: AtomId, id: []const u8) ?*Node {
         if (self.node_type == .Element) {
             if (self.getAttribute(id_atom)) |val| {
