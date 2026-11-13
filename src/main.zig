@@ -152,7 +152,16 @@ fn evaluateJs(allocator: std.mem.Allocator, script: []const u8) !void {
     defer code.deinit();
 
     const res = try vm.execute(&code);
-    std.debug.print("JS Result: {d} (type: {s})\n", .{ res.toFloat64(), @tagName(res.getType()) });
+    switch (res.getType()) {
+        .Int32 => std.debug.print("JS Result: {d} (type: Int32)\n", .{res.toInt32()}),
+        .Float64 => std.debug.print("JS Result: {d} (type: Float64)\n", .{res.toFloat64()}),
+        .Boolean => std.debug.print("JS Result: {} (type: Boolean)\n", .{res.toBoolean()}),
+        .String => std.debug.print("JS Result: \"{s}\" (type: String)\n", .{atom_table.get(res.toStringAtom())}),
+        .Null => std.debug.print("JS Result: null (type: Null)\n", .{}),
+        .Undefined => std.debug.print("JS Result: undefined (type: Undefined)\n", .{}),
+        .Object => std.debug.print("JS Result: [object Object] (type: Object)\n", .{}),
+        .Symbol => std.debug.print("JS Result: Symbol() (type: Symbol)\n", .{}),
+    }
 }
 
 fn dumpDom(allocator: std.mem.Allocator, url: []const u8) !void {

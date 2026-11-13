@@ -27,6 +27,7 @@ pub const VM = struct {
     frame_count: usize = 0,
     jit: ?*JITCompiler = null,
     invocation_count: u32 = 0,
+    last_this: JSValue = JSValue.undefined_val,
 
     pub fn init(allocator: std.mem.Allocator, atom_table: *AtomTable, gc: *GarbageCollector) !*VM {
         const vm = try allocator.create(VM);
@@ -42,6 +43,7 @@ pub const VM = struct {
             .frame_count = 0,
             .jit = null,
             .invocation_count = 0,
+            .last_this = JSValue.undefined_val,
         };
         return vm;
     }
@@ -144,6 +146,7 @@ pub const VM = struct {
                     frame.ip += 2;
                     const atom = AtomId.fromU32(atom_u32);
                     const target = self.pop();
+                    self.last_this = target;
                     if (target.toObject()) |obj| {
                         const val = obj.getProperty(atom) orelse JSValue.undefined_val;
                         try self.push(val);
@@ -280,6 +283,9 @@ pub const VM = struct {
                     frame.ip += 1;
 
                     const callee = self.pop();
+                    const call_this = self.last_this;
+                    self.last_this = JSValue.undefined_val;
+
                     var args_buf: [16]JSValue = undefined;
                     var i: usize = arg_count;
                     while (i > 0) : (i -= 1) {
@@ -288,7 +294,7 @@ pub const VM = struct {
 
                     if (callee.toObject()) |obj| {
                         if (obj.native_fn) |n_fn| {
-                            const res = try n_fn(obj.native_ctx orelse @ptrCast(self), JSValue.undefined_val, args_buf[0..arg_count]);
+                            const res = try n_fn(obj.native_ctx orelse @ptrCast(self), call_this, args_buf[0..arg_count]);
                             try self.push(res);
                         } else if (obj.code_block) |cb_ptr| {
                             const target_code: *const CodeBlock = @ptrCast(@alignCast(cb_ptr));

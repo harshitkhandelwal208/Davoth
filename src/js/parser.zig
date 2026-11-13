@@ -586,7 +586,72 @@ pub const Parser = struct {
     }
 
     fn parseCallOrMember(self: *Parser) anyerror!*Node {
-        var expr = try self.parsePrimary();
+        var expr = if (self.match(.KwNew)) blk: {
+            var callee = try self.parsePrimary();
+            errdefer callee.deinit(self.allocator);
+
+            while (self.match(.Dot)) {
+                const prop_name = self.current.lexeme;
+                try self.consume(.Identifier, "Expected property name after '.'");
+                const member_node = try self.allocator.create(Node);
+                member_node.* = .{
+                    .data = .{
+                        .Member = .{
+                            .object = callee,
+                            .property = prop_name,
+                            .computed = false,
+                        },
+                    },
+                };
+                callee = member_node;
+            }
+
+            if (self.match(.LParen)) {
+                var args: std.ArrayList(*Node) = .empty;
+                errdefer {
+                    for (args.items) |arg| arg.deinit(self.allocator);
+                    args.deinit(self.allocator);
+                }
+                if (self.current.token_type != .RParen) {
+                    while (true) {
+                        const arg = try self.parseExpression();
+                        try args.append(self.allocator, arg);
+                        if (!self.match(.Comma)) break;
+                    }
+                }
+                try self.consume(.RParen, "Expected ')' after arguments");
+
+                const args_slice = try args.toOwnedSlice(self.allocator);
+                errdefer {
+                    for (args_slice) |arg| arg.deinit(self.allocator);
+                    self.allocator.free(args_slice);
+                }
+
+                const call_node = try self.allocator.create(Node);
+                call_node.* = .{
+                    .data = .{
+                        .Call = .{
+                            .callee = callee,
+                            .arguments = args_slice,
+                        },
+                    },
+                };
+                break :blk call_node;
+            } else {
+                const args_slice = try self.allocator.alloc(*Node, 0);
+                const call_node = try self.allocator.create(Node);
+                call_node.* = .{
+                    .data = .{
+                        .Call = .{
+                            .callee = callee,
+                            .arguments = args_slice,
+                        },
+                    },
+                };
+                break :blk call_node;
+            }
+        } else try self.parsePrimary();
+
         errdefer expr.deinit(self.allocator);
 
         while (true) {

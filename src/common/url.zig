@@ -232,6 +232,128 @@ pub const URL = struct {
     }
 };
 
+pub const URLSearchParams = struct {
+    pub const Param = struct {
+        key: []const u8,
+        value: []const u8,
+    };
+
+    allocator: std.mem.Allocator,
+    params: std.ArrayList(Param),
+
+    pub fn init(allocator: std.mem.Allocator, query_string: []const u8) !URLSearchParams {
+        var list = std.ArrayList(Param).empty;
+        errdefer {
+            for (list.items) |p| {
+                allocator.free(p.key);
+                allocator.free(p.value);
+            }
+            list.deinit(allocator);
+        }
+
+        var raw = query_string;
+        if (raw.len > 0 and raw[0] == '?') {
+            raw = raw[1..];
+        }
+
+        var it = std.mem.splitScalar(u8, raw, '&');
+        while (it.next()) |pair| {
+            if (pair.len == 0) continue;
+            if (std.mem.indexOfScalar(u8, pair, '=')) |eq| {
+                const k = try allocator.dupe(u8, pair[0..eq]);
+                errdefer allocator.free(k);
+                const v = try allocator.dupe(u8, pair[eq + 1 ..]);
+                try list.append(allocator, .{ .key = k, .value = v });
+            } else {
+                const k = try allocator.dupe(u8, pair);
+                const v = try allocator.dupe(u8, "");
+                try list.append(allocator, .{ .key = k, .value = v });
+            }
+        }
+
+        return .{
+            .allocator = allocator,
+            .params = list,
+        };
+    }
+
+    pub fn deinit(self: *URLSearchParams) void {
+        for (self.params.items) |p| {
+            self.allocator.free(p.key);
+            self.allocator.free(p.value);
+        }
+        self.params.deinit(self.allocator);
+    }
+
+    pub fn get(self: *const URLSearchParams, name: []const u8) ?[]const u8 {
+        for (self.params.items) |p| {
+            if (std.mem.eql(u8, p.key, name)) return p.value;
+        }
+        return null;
+    }
+
+    pub fn has(self: *const URLSearchParams, name: []const u8) bool {
+        return self.get(name) != null;
+    }
+
+    pub fn set(self: *URLSearchParams, name: []const u8, value: []const u8) !void {
+        var found = false;
+        var i: usize = 0;
+        while (i < self.params.items.len) {
+            if (std.mem.eql(u8, self.params.items[i].key, name)) {
+                if (!found) {
+                    self.allocator.free(self.params.items[i].value);
+                    self.params.items[i].value = try self.allocator.dupe(u8, value);
+                    found = true;
+                    i += 1;
+                } else {
+                    const p = self.params.orderedRemove(i);
+                    self.allocator.free(p.key);
+                    self.allocator.free(p.value);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if (!found) {
+            try self.append(name, value);
+        }
+    }
+
+    pub fn append(self: *URLSearchParams, name: []const u8, value: []const u8) !void {
+        const k = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(k);
+        const v = try self.allocator.dupe(u8, value);
+        try self.params.append(self.allocator, .{ .key = k, .value = v });
+    }
+
+    pub fn delete(self: *URLSearchParams, name: []const u8) void {
+        var i: usize = 0;
+        while (i < self.params.items.len) {
+            if (std.mem.eql(u8, self.params.items[i].key, name)) {
+                const p = self.params.orderedRemove(i);
+                self.allocator.free(p.key);
+                self.allocator.free(p.value);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    pub fn toString(self: *const URLSearchParams, allocator: std.mem.Allocator) ![]u8 {
+        var list = std.ArrayList(u8).empty;
+        errdefer list.deinit(allocator);
+
+        for (self.params.items, 0..) |p, idx| {
+            if (idx > 0) try list.append(allocator, '&');
+            try list.appendSlice(allocator, p.key);
+            try list.append(allocator, '=');
+            try list.appendSlice(allocator, p.value);
+        }
+        return list.toOwnedSlice(allocator);
+    }
+};
+
 test "url parsing and origin" {
     const allocator = std.testing.allocator;
     var url = try URL.parse(allocator, "https://davoth.org:8443/docs/index.html?v=1#sec2");
@@ -252,4 +374,33 @@ test "url parsing and origin" {
     var resolved = try url.resolve(allocator, "style.css");
     defer resolved.deinit();
     try std.testing.expectEqualStrings("/docs/style.css", resolved.path);
+}
+
+test "urlsearchparams query string manipulation" {
+    const allocator = std.testing.allocator;
+    var usp = try URLSearchParams.init(allocator, "?tab=settings&theme=dark&count=5");
+    defer usp.deinit();
+
+    try std.testing.expect(usp.has("tab"));
+    try std.testing.expectEqualStrings("settings", usp.get("tab").?);
+    try std.testing.expectEqualStrings("dark", usp.get("theme").?);
+    try std.testing.expectEqualStrings("5", usp.get("count").?);
+    try std.testing.expect(!usp.has("nonexistent"));
+
+    // Modify parameter
+    try usp.set("theme", "sepia");
+    try std.testing.expectEqualStrings("sepia", usp.get("theme").?);
+
+    // Delete parameter
+    usp.delete("count");
+    try std.testing.expect(!usp.has("count"));
+
+    // Append new parameter
+    try usp.append("mode", "strict");
+    try std.testing.expectEqualStrings("strict", usp.get("mode").?);
+
+    // Serialize back to query string
+    const qs = try usp.toString(allocator);
+    defer allocator.free(qs);
+    try std.testing.expectEqualStrings("tab=settings&theme=sepia&mode=strict", qs);
 }

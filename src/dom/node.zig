@@ -265,6 +265,136 @@ pub const Node = struct {
         return self.getAttribute(name) != null;
     }
 
+    // WHATWG Element Traversal
+    pub fn firstElementChild(self: *const Node) ?*Node {
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.node_type == .Element) return child;
+            curr = child.next_sibling;
+        }
+        return null;
+    }
+
+    pub fn lastElementChild(self: *const Node) ?*Node {
+        var curr = self.last_child;
+        while (curr) |child| {
+            if (child.node_type == .Element) return child;
+            curr = child.prev_sibling;
+        }
+        return null;
+    }
+
+    pub fn nextElementSibling(self: *const Node) ?*Node {
+        var curr = self.next_sibling;
+        while (curr) |sib| {
+            if (sib.node_type == .Element) return sib;
+            curr = sib.next_sibling;
+        }
+        return null;
+    }
+
+    pub fn previousElementSibling(self: *const Node) ?*Node {
+        var curr = self.prev_sibling;
+        while (curr) |sib| {
+            if (sib.node_type == .Element) return sib;
+            curr = sib.prev_sibling;
+        }
+        return null;
+    }
+
+    pub fn childElementCount(self: *const Node) usize {
+        var count: usize = 0;
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.node_type == .Element) count += 1;
+            curr = child.next_sibling;
+        }
+        return count;
+    }
+
+    pub fn parentElement(self: *const Node) ?*Node {
+        if (self.parent_node) |p| {
+            if (p.node_type == .Element) return p;
+        }
+        return null;
+    }
+
+    // WHATWG matches and closest
+    pub fn matches(self: *const Node, table: *AtomTable, selector_str: []const u8) bool {
+        if (self.node_type != .Element) return false;
+        const trimmed = std.mem.trim(u8, selector_str, " \t\r\n");
+        if (trimmed.len == 0) return false;
+
+        var i: usize = 0;
+        // 1. Tag name (if any)
+        if (trimmed[0] != '#' and trimmed[0] != '.' and trimmed[0] != '[') {
+            const tag_end = std.mem.indexOfAny(u8, trimmed, "#.[") orelse trimmed.len;
+            const tag_part = trimmed[0..tag_end];
+            if (!std.mem.eql(u8, tag_part, "*")) {
+                const tag_name = table.get(self.tag_name);
+                if (!std.ascii.eqlIgnoreCase(tag_name, tag_part)) return false;
+            }
+            i = tag_end;
+        }
+
+        // 2. Modifiers: #id, .class, [attr]
+        while (i < trimmed.len) {
+            const ch = trimmed[i];
+            if (ch == '#') {
+                i += 1;
+                const id_end = std.mem.indexOfAny(u8, trimmed[i..], ".#[") orelse (trimmed.len - i);
+                const id_val = trimmed[i .. i + id_end];
+                i += id_end;
+                const id_atom = table.intern("id") catch return false;
+                const actual_id = self.getAttribute(id_atom) orelse return false;
+                if (!std.mem.eql(u8, actual_id, id_val)) return false;
+            } else if (ch == '.') {
+                i += 1;
+                const class_end = std.mem.indexOfAny(u8, trimmed[i..], ".#[") orelse (trimmed.len - i);
+                const class_val = trimmed[i .. i + class_end];
+                i += class_end;
+                const class_atom = table.intern("class") catch return false;
+                const actual_class = self.getAttribute(class_atom) orelse return false;
+                var found = false;
+                var it = std.mem.tokenizeScalar(u8, actual_class, ' ');
+                while (it.next()) |token| {
+                    if (std.mem.eql(u8, token, class_val)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            } else if (ch == '[') {
+                const close_bracket = std.mem.indexOfScalar(u8, trimmed[i..], ']') orelse return false;
+                const attr_expr = trimmed[i + 1 .. i + close_bracket];
+                i += close_bracket + 1;
+                if (std.mem.indexOfScalar(u8, attr_expr, '=')) |eq_idx| {
+                    const attr_name = std.mem.trim(u8, attr_expr[0..eq_idx], " \t'\"");
+                    const attr_val = std.mem.trim(u8, attr_expr[eq_idx + 1 ..], " \t'\"");
+                    const attr_atom = table.intern(attr_name) catch return false;
+                    const actual_val = self.getAttribute(attr_atom) orelse return false;
+                    if (!std.mem.eql(u8, actual_val, attr_val)) return false;
+                } else {
+                    const attr_name = std.mem.trim(u8, attr_expr, " \t'\"");
+                    const attr_atom = table.intern(attr_name) catch return false;
+                    if (!self.hasAttribute(attr_atom)) return false;
+                }
+            } else {
+                break;
+            }
+        }
+        return true;
+    }
+
+    pub fn closest(self: *Node, table: *AtomTable, selector_str: []const u8) ?*Node {
+        var curr: ?*Node = self;
+        while (curr) |n| {
+            if (n.matches(table, selector_str)) return n;
+            curr = n.parent_node;
+        }
+        return null;
+    }
+
     pub fn removeAttribute(self: *Node, allocator: std.mem.Allocator, name: AtomId) bool {
         for (self.attributes.items, 0..) |attr, i| {
             if (attr.name == name) {
@@ -504,4 +634,68 @@ test "node insertBefore and replaceChild" {
 
     try std.testing.expectEqual(replacement, root.first_child.?.next_sibling.?);
     try std.testing.expectEqual(last, replacement.next_sibling.?);
+}
+
+test "node element traversal matches and closest" {
+    const allocator = std.testing.allocator;
+    const table = try AtomTable.init(allocator);
+    defer table.deinit();
+
+    // DOM structure:
+    // <div id="card" class="container widget">
+    //   "Text whitespace"
+    //   <section class="body">
+    //     <button id="submit-btn" data-action="save">Submit</button>
+    //   </section>
+    // </div>
+    const card = try Node.create(allocator, .Element, try table.intern("div"));
+    defer card.deinit(allocator);
+    try card.setAttribute(allocator, try table.intern("id"), "card");
+    try card.setAttribute(allocator, try table.intern("class"), "container widget");
+
+    const text_node = try Node.createText(allocator, "   \n   ");
+    try card.appendChild(allocator, text_node);
+
+    const section = try Node.create(allocator, .Element, try table.intern("section"));
+    try section.setAttribute(allocator, try table.intern("class"), "body");
+    try card.appendChild(allocator, section);
+
+    const button = try Node.create(allocator, .Element, try table.intern("button"));
+    try button.setAttribute(allocator, try table.intern("id"), "submit-btn");
+    try button.setAttribute(allocator, try table.intern("data-action"), "save");
+    try section.appendChild(allocator, button);
+
+    // 1. Element Traversal
+    try std.testing.expectEqual(section, card.firstElementChild().?);
+    try std.testing.expectEqual(section, card.lastElementChild().?);
+    try std.testing.expectEqual(@as(usize, 1), card.childElementCount());
+    try std.testing.expect(section.nextElementSibling() == null);
+    try std.testing.expectEqual(card, section.parentElement().?);
+
+    // 2. matches
+    try std.testing.expect(button.matches(table, "button"));
+    try std.testing.expect(button.matches(table, "#submit-btn"));
+    try std.testing.expect(button.matches(table, "[data-action]"));
+    try std.testing.expect(button.matches(table, "[data-action=save]"));
+    try std.testing.expect(button.matches(table, "button#submit-btn[data-action=save]"));
+    try std.testing.expect(card.matches(table, "div.container.widget"));
+    try std.testing.expect(card.matches(table, "div#card.container"));
+    try std.testing.expect(!button.matches(table, ".missing"));
+    try std.testing.expect(!button.matches(table, "div#submit-btn"));
+
+    // 3. closest
+    const closest_btn = button.closest(table, "button");
+    try std.testing.expectEqual(button, closest_btn.?);
+
+    const closest_sec = button.closest(table, ".body");
+    try std.testing.expectEqual(section, closest_sec.?);
+
+    const closest_card = button.closest(table, "#card");
+    try std.testing.expectEqual(card, closest_card.?);
+
+    const closest_card_compound = button.closest(table, "div.container.widget");
+    try std.testing.expectEqual(card, closest_card_compound.?);
+
+    const closest_nonexistent = button.closest(table, "article");
+    try std.testing.expect(closest_nonexistent == null);
 }

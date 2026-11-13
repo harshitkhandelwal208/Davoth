@@ -6,6 +6,9 @@ const JSValue = @import("value.zig").JSValue;
 const JSObject = @import("object.zig").JSObject;
 const VM = @import("interpreter.zig").VM;
 const c = @import("../common/c.zig");
+const url_mod = @import("../common/url.zig");
+const URL = url_mod.URL;
+const URLSearchParams = url_mod.URLSearchParams;
 
 var timer_counter: i32 = 1;
 
@@ -195,6 +198,13 @@ pub fn initBuiltins(vm: *VM) !void {
 
     const text_decoder_fn = try vm.gc.allocateFunction(null, nativeTextDecoderConstructor, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("TextDecoder"), JSValue.fromObject(text_decoder_fn));
+
+    // URL & URLSearchParams Web APIs
+    const url_params_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("URLSearchParams"), JSValue.fromObject(url_params_fn));
+
+    const url_fn = try vm.gc.allocateFunction(null, nativeUrlConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("URL"), JSValue.fromObject(url_fn));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -857,6 +867,447 @@ fn nativeTextDecoderConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue)
     return JSValue.fromObject(inst);
 }
 
+// WHATWG URLSearchParams implementation
+fn nativeUrlSearchParamsConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+
+    var query_str: []const u8 = "";
+    if (args.len > 0 and args[0].isString()) {
+        query_str = vm.atom_table.get(args[0].toStringAtom());
+    }
+
+    var params = try URLSearchParams.init(vm.allocator, query_str);
+    defer params.deinit();
+
+    var k_values: std.ArrayList(JSValue) = .empty;
+    defer k_values.deinit(vm.allocator);
+    var v_values: std.ArrayList(JSValue) = .empty;
+    defer v_values.deinit(vm.allocator);
+
+    for (params.params.items) |p| {
+        const k_atom = try vm.atom_table.intern(p.key);
+        const v_atom = try vm.atom_table.intern(p.value);
+        try k_values.append(vm.allocator, JSValue.fromStringAtom(k_atom));
+        try v_values.append(vm.allocator, JSValue.fromStringAtom(v_atom));
+    }
+
+    const keys_arr = try createArray(vm, k_values.items);
+    const vals_arr = try createArray(vm, v_values.items);
+
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_keys"), JSValue.fromObject(keys_arr));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_values"), JSValue.fromObject(vals_arr));
+
+    const get_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsGet, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("get"), JSValue.fromObject(get_fn));
+
+    const get_all_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsGetAll, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getAll"), JSValue.fromObject(get_all_fn));
+
+    const has_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsHas, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("has"), JSValue.fromObject(has_fn));
+
+    const set_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsSet, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("set"), JSValue.fromObject(set_fn));
+
+    const append_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsAppend, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("append"), JSValue.fromObject(append_fn));
+
+    const delete_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsDelete, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("delete"), JSValue.fromObject(delete_fn));
+
+    const to_string_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsToString, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("toString"), JSValue.fromObject(to_string_fn));
+
+    return JSValue.fromObject(inst);
+}
+
+fn nativeUrlSearchParamsGet(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.null_val;
+    if (args.len == 0) return JSValue.null_val;
+
+    const target_key = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.null_val,
+    };
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    const vals_atom = try vm.atom_table.intern("_values");
+    const keys_obj = (inst.getProperty(keys_atom) orelse return JSValue.null_val).toObject() orelse return JSValue.null_val;
+    const vals_obj = (inst.getProperty(vals_atom) orelse return JSValue.null_val).toObject() orelse return JSValue.null_val;
+
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    try getArrayElements(vm, keys_obj, &keys_list);
+
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+    try getArrayElements(vm, vals_obj, &vals_list);
+
+    for (keys_list.items, 0..) |k_val, idx| {
+        if (k_val.isString()) {
+            const k_str = vm.atom_table.get(k_val.toStringAtom());
+            if (std.mem.eql(u8, k_str, target_key)) {
+                if (idx < vals_list.items.len) {
+                    return vals_list.items[idx];
+                }
+                return JSValue.null_val;
+            }
+        }
+    }
+    return JSValue.null_val;
+}
+
+fn nativeUrlSearchParamsGetAll(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+    if (args.len == 0) return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+
+    const target_key = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.fromObject(try createArray(vm, &[_]JSValue{})),
+    };
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    const vals_atom = try vm.atom_table.intern("_values");
+    const keys_obj = (inst.getProperty(keys_atom) orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}))).toObject() orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+    const vals_obj = (inst.getProperty(vals_atom) orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}))).toObject() orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    try getArrayElements(vm, keys_obj, &keys_list);
+
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+    try getArrayElements(vm, vals_obj, &vals_list);
+
+    var matched: std.ArrayList(JSValue) = .empty;
+    defer matched.deinit(vm.allocator);
+
+    for (keys_list.items, 0..) |k_val, idx| {
+        if (k_val.isString()) {
+            const k_str = vm.atom_table.get(k_val.toStringAtom());
+            if (std.mem.eql(u8, k_str, target_key)) {
+                if (idx < vals_list.items.len) {
+                    try matched.append(vm.allocator, vals_list.items[idx]);
+                }
+            }
+        }
+    }
+    return JSValue.fromObject(try createArray(vm, matched.items));
+}
+
+fn nativeUrlSearchParamsHas(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const val = try nativeUrlSearchParamsGet(ctx, this_val, args);
+    return JSValue.fromBoolean(!val.isNull());
+}
+
+fn nativeUrlSearchParamsAppend(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0) return JSValue.undefined_val;
+
+    var k_buf: [128]u8 = undefined;
+    const k_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&k_buf, "{d}", .{args[0].toInt32()}) catch "0",
+        else => "key",
+    };
+
+    var v_buf: [128]u8 = undefined;
+    const v_str = if (args.len > 1) switch (args[1].getType()) {
+        .String => vm.atom_table.get(args[1].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&v_buf, "{d}", .{args[1].toInt32()}) catch "0",
+        else => "",
+    } else "";
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    const vals_atom = try vm.atom_table.intern("_values");
+    const keys_obj = (inst.getProperty(keys_atom) orelse return JSValue.undefined_val).toObject() orelse return JSValue.undefined_val;
+    const vals_obj = (inst.getProperty(vals_atom) orelse return JSValue.undefined_val).toObject() orelse return JSValue.undefined_val;
+
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    try getArrayElements(vm, keys_obj, &keys_list);
+
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+    try getArrayElements(vm, vals_obj, &vals_list);
+
+    try keys_list.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(k_str)));
+    try vals_list.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(v_str)));
+
+    const new_keys_arr = try createArray(vm, keys_list.items);
+    const new_vals_arr = try createArray(vm, vals_list.items);
+    try inst.setProperty(vm.allocator, keys_atom, JSValue.fromObject(new_keys_arr));
+    try inst.setProperty(vm.allocator, vals_atom, JSValue.fromObject(new_vals_arr));
+
+    return JSValue.undefined_val;
+}
+
+fn nativeUrlSearchParamsDelete(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0) return JSValue.undefined_val;
+
+    const target_key = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.undefined_val,
+    };
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    const vals_atom = try vm.atom_table.intern("_values");
+    const keys_obj = (inst.getProperty(keys_atom) orelse return JSValue.undefined_val).toObject() orelse return JSValue.undefined_val;
+    const vals_obj = (inst.getProperty(vals_atom) orelse return JSValue.undefined_val).toObject() orelse return JSValue.undefined_val;
+
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    try getArrayElements(vm, keys_obj, &keys_list);
+
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+    try getArrayElements(vm, vals_obj, &vals_list);
+
+    var new_k: std.ArrayList(JSValue) = .empty;
+    defer new_k.deinit(vm.allocator);
+    var new_v: std.ArrayList(JSValue) = .empty;
+    defer new_v.deinit(vm.allocator);
+
+    for (keys_list.items, 0..) |k_val, idx| {
+        if (k_val.isString()) {
+            const k_str = vm.atom_table.get(k_val.toStringAtom());
+            if (std.mem.eql(u8, k_str, target_key)) continue;
+        }
+        try new_k.append(vm.allocator, k_val);
+        if (idx < vals_list.items.len) {
+            try new_v.append(vm.allocator, vals_list.items[idx]);
+        }
+    }
+
+    const new_keys_arr = try createArray(vm, new_k.items);
+    const new_vals_arr = try createArray(vm, new_v.items);
+    try inst.setProperty(vm.allocator, keys_atom, JSValue.fromObject(new_keys_arr));
+    try inst.setProperty(vm.allocator, vals_atom, JSValue.fromObject(new_vals_arr));
+
+    return JSValue.undefined_val;
+}
+
+fn nativeUrlSearchParamsSet(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0) return JSValue.undefined_val;
+
+    var k_buf: [128]u8 = undefined;
+    const k_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&k_buf, "{d}", .{args[0].toInt32()}) catch "0",
+        else => "key",
+    };
+
+    var v_buf: [128]u8 = undefined;
+    const v_str = if (args.len > 1) switch (args[1].getType()) {
+        .String => vm.atom_table.get(args[1].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&v_buf, "{d}", .{args[1].toInt32()}) catch "0",
+        else => "",
+    } else "";
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    const vals_atom = try vm.atom_table.intern("_values");
+    const keys_obj = (inst.getProperty(keys_atom) orelse return JSValue.undefined_val).toObject() orelse return JSValue.undefined_val;
+    const vals_obj = (inst.getProperty(vals_atom) orelse return JSValue.undefined_val).toObject() orelse return JSValue.undefined_val;
+
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    try getArrayElements(vm, keys_obj, &keys_list);
+
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+    try getArrayElements(vm, vals_obj, &vals_list);
+
+    var new_k: std.ArrayList(JSValue) = .empty;
+    defer new_k.deinit(vm.allocator);
+    var new_v: std.ArrayList(JSValue) = .empty;
+    defer new_v.deinit(vm.allocator);
+
+    var found = false;
+    for (keys_list.items, 0..) |k_val, idx| {
+        if (k_val.isString()) {
+            const cur_k_str = vm.atom_table.get(k_val.toStringAtom());
+            if (std.mem.eql(u8, cur_k_str, k_str)) {
+                if (!found) {
+                    try new_k.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(k_str)));
+                    try new_v.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(v_str)));
+                    found = true;
+                }
+                continue;
+            }
+        }
+        try new_k.append(vm.allocator, k_val);
+        if (idx < vals_list.items.len) {
+            try new_v.append(vm.allocator, vals_list.items[idx]);
+        }
+    }
+
+    if (!found) {
+        try new_k.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(k_str)));
+        try new_v.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(v_str)));
+    }
+
+    const new_keys_arr = try createArray(vm, new_k.items);
+    const new_vals_arr = try createArray(vm, new_v.items);
+    try inst.setProperty(vm.allocator, keys_atom, JSValue.fromObject(new_keys_arr));
+    try inst.setProperty(vm.allocator, vals_atom, JSValue.fromObject(new_vals_arr));
+
+    return JSValue.undefined_val;
+}
+
+fn nativeUrlSearchParamsToString(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    const vals_atom = try vm.atom_table.intern("_values");
+    const keys_obj = (inst.getProperty(keys_atom) orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""))).toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    const vals_obj = (inst.getProperty(vals_atom) orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""))).toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    try getArrayElements(vm, keys_obj, &keys_list);
+
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+    try getArrayElements(vm, vals_obj, &vals_list);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(vm.allocator);
+
+    for (keys_list.items, 0..) |k_val, idx| {
+        if (!k_val.isString()) continue;
+        if (out.items.len > 0) try out.append(vm.allocator, '&');
+        try out.appendSlice(vm.allocator, vm.atom_table.get(k_val.toStringAtom()));
+        try out.append(vm.allocator, '=');
+        if (idx < vals_list.items.len and vals_list.items[idx].isString()) {
+            try out.appendSlice(vm.allocator, vm.atom_table.get(vals_list.items[idx].toStringAtom()));
+        }
+    }
+
+    const atom = try vm.atom_table.intern(out.items);
+    return JSValue.fromStringAtom(atom);
+}
+
+// WHATWG URL implementation
+fn nativeUrlConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+
+    const input_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.undefined_val,
+    };
+
+    var resolved_url_str: []u8 = undefined;
+    var needs_free_resolved = false;
+    defer {
+        if (needs_free_resolved) vm.allocator.free(resolved_url_str);
+    }
+
+    if (args.len > 1 and args[1].isString()) {
+        const base_str = vm.atom_table.get(args[1].toStringAtom());
+        var base_url = try URL.parse(vm.allocator, base_str);
+        defer base_url.deinit();
+
+        var res_url = try base_url.resolve(vm.allocator, input_str);
+        defer res_url.deinit();
+
+        resolved_url_str = try res_url.serialize(vm.allocator);
+        needs_free_resolved = true;
+    } else {
+        resolved_url_str = @constCast(input_str);
+        needs_free_resolved = false;
+    }
+
+    var parsed = try URL.parse(vm.allocator, resolved_url_str);
+    defer parsed.deinit();
+
+    const inst = try vm.gc.allocateObject(null);
+
+    // href
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("href"), JSValue.fromStringAtom(try vm.atom_table.intern(resolved_url_str)));
+
+    // origin
+    const origin_str = try parsed.origin(vm.allocator);
+    defer vm.allocator.free(origin_str);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("origin"), JSValue.fromStringAtom(try vm.atom_table.intern(origin_str)));
+
+    // protocol
+    var proto_buf: [32]u8 = undefined;
+    const proto_str = std.fmt.bufPrint(&proto_buf, "{s}:", .{parsed.scheme}) catch "http:";
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("protocol"), JSValue.fromStringAtom(try vm.atom_table.intern(proto_str)));
+
+    // host & hostname
+    var host_buf: [256]u8 = undefined;
+    const host_str = if (parsed.port != 80 and parsed.port != 443 and parsed.port != 0)
+        std.fmt.bufPrint(&host_buf, "{s}:{d}", .{ parsed.host, parsed.port }) catch parsed.host
+    else
+        parsed.host;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("host"), JSValue.fromStringAtom(try vm.atom_table.intern(host_str)));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("hostname"), JSValue.fromStringAtom(try vm.atom_table.intern(parsed.host)));
+
+    // port
+    var port_buf: [16]u8 = undefined;
+    const port_str = if (parsed.port != 80 and parsed.port != 443 and parsed.port != 0)
+        std.fmt.bufPrint(&port_buf, "{d}", .{parsed.port}) catch ""
+    else
+        "";
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("port"), JSValue.fromStringAtom(try vm.atom_table.intern(port_str)));
+
+    // pathname
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("pathname"), JSValue.fromStringAtom(try vm.atom_table.intern(parsed.path)));
+
+    // search
+    var search_buf = std.ArrayList(u8).empty;
+    defer search_buf.deinit(vm.allocator);
+    if (parsed.query) |q| {
+        if (q.len > 0) {
+            try search_buf.append(vm.allocator, '?');
+            try search_buf.appendSlice(vm.allocator, q);
+        }
+    }
+    const search_str = search_buf.items;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("search"), JSValue.fromStringAtom(try vm.atom_table.intern(search_str)));
+
+    // hash
+    var hash_buf = std.ArrayList(u8).empty;
+    defer hash_buf.deinit(vm.allocator);
+    if (parsed.fragment) |f| {
+        if (f.len > 0) {
+            try hash_buf.append(vm.allocator, '#');
+            try hash_buf.appendSlice(vm.allocator, f);
+        }
+    }
+    const hash_str = hash_buf.items;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("hash"), JSValue.fromStringAtom(try vm.atom_table.intern(hash_str)));
+
+    // searchParams
+    const search_atom = try vm.atom_table.intern(search_str);
+    const params_val = try nativeUrlSearchParamsConstructor(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{JSValue.fromStringAtom(search_atom)});
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("searchParams"), params_val);
+
+    // toString
+    const to_str_fn = try vm.gc.allocateFunction(null, nativeUrlToString, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("toString"), JSValue.fromObject(to_str_fn));
+
+    return JSValue.fromObject(inst);
+}
+
+fn nativeUrlToString(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const obj = this_val.toObject() orelse return JSValue.undefined_val;
+    const href_atom = try vm.atom_table.intern("href");
+    return obj.getProperty(href_atom) orelse JSValue.undefined_val;
+}
+
 test "builtins installation and execution" {
     const allocator = std.testing.allocator;
     const atom_table = try AtomTable.init(allocator);
@@ -1089,4 +1540,154 @@ test "modern web and es2024 builtins: btoa atob crypto structuredClone object gr
     const g_obj = grouped_val.toObject().?;
     try std.testing.expect(g_obj.getProperty(even_atom) != null);
     try std.testing.expect(g_obj.getProperty(odd_atom) != null);
+}
+
+test "whatwg url and urlsearchparams in javascript engine" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    // 1. URLSearchParams standalone: append, get, has, set, delete, toString
+    const init_query = try atom_table.intern("user=davoth&lang=zig&v=1");
+    const params_val = try nativeUrlSearchParamsConstructor(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(init_query),
+    });
+    try std.testing.expect(params_val.isObject());
+
+    // has
+    const has_user = try nativeUrlSearchParamsHas(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("user")),
+    });
+    try std.testing.expect(has_user.toBoolean());
+
+    const has_missing = try nativeUrlSearchParamsHas(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("missing")),
+    });
+    try std.testing.expect(!has_missing.toBoolean());
+
+    // get
+    const user_val = try nativeUrlSearchParamsGet(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("user")),
+    });
+    try std.testing.expect(user_val.isString());
+    try std.testing.expectEqualStrings("davoth", atom_table.get(user_val.toStringAtom()));
+
+    // set
+    _ = try nativeUrlSearchParamsSet(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("lang")),
+        JSValue.fromStringAtom(try atom_table.intern("zig017")),
+    });
+    const updated_lang = try nativeUrlSearchParamsGet(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("lang")),
+    });
+    try std.testing.expectEqualStrings("zig017", atom_table.get(updated_lang.toStringAtom()));
+
+    // append
+    _ = try nativeUrlSearchParamsAppend(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("theme")),
+        JSValue.fromStringAtom(try atom_table.intern("dark")),
+    });
+    const theme_val = try nativeUrlSearchParamsGet(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("theme")),
+    });
+    try std.testing.expectEqualStrings("dark", atom_table.get(theme_val.toStringAtom()));
+
+    // delete
+    _ = try nativeUrlSearchParamsDelete(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("v")),
+    });
+    const del_val = try nativeUrlSearchParamsGet(@ptrCast(vm), params_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("v")),
+    });
+    try std.testing.expect(del_val.isNull());
+
+    // toString
+    const serialized = try nativeUrlSearchParamsToString(@ptrCast(vm), params_val, &[_]JSValue{});
+    try std.testing.expect(serialized.isString());
+    try std.testing.expectEqualStrings("user=davoth&lang=zig017&theme=dark", atom_table.get(serialized.toStringAtom()));
+
+    // 2. URL constructor
+    const full_url_atom = try atom_table.intern("https://davoth.org:8443/docs/index.html?topic=standard#section1");
+    const url_val = try nativeUrlConstructor(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(full_url_atom),
+    });
+    try std.testing.expect(url_val.isObject());
+    const url_obj = url_val.toObject().?;
+
+    // Check URL properties
+    const href_prop = url_obj.getProperty(try atom_table.intern("href")).?;
+    try std.testing.expectEqualStrings("https://davoth.org:8443/docs/index.html?topic=standard#section1", atom_table.get(href_prop.toStringAtom()));
+
+    const origin_prop = url_obj.getProperty(try atom_table.intern("origin")).?;
+    try std.testing.expectEqualStrings("https://davoth.org:8443", atom_table.get(origin_prop.toStringAtom()));
+
+    const protocol_prop = url_obj.getProperty(try atom_table.intern("protocol")).?;
+    try std.testing.expectEqualStrings("https:", atom_table.get(protocol_prop.toStringAtom()));
+
+    const host_prop = url_obj.getProperty(try atom_table.intern("host")).?;
+    try std.testing.expectEqualStrings("davoth.org:8443", atom_table.get(host_prop.toStringAtom()));
+
+    const hostname_prop = url_obj.getProperty(try atom_table.intern("hostname")).?;
+    try std.testing.expectEqualStrings("davoth.org", atom_table.get(hostname_prop.toStringAtom()));
+
+    const port_prop = url_obj.getProperty(try atom_table.intern("port")).?;
+    try std.testing.expectEqualStrings("8443", atom_table.get(port_prop.toStringAtom()));
+
+    const pathname_prop = url_obj.getProperty(try atom_table.intern("pathname")).?;
+    try std.testing.expectEqualStrings("/docs/index.html", atom_table.get(pathname_prop.toStringAtom()));
+
+    const search_prop = url_obj.getProperty(try atom_table.intern("search")).?;
+    try std.testing.expectEqualStrings("?topic=standard", atom_table.get(search_prop.toStringAtom()));
+
+    const hash_prop = url_obj.getProperty(try atom_table.intern("hash")).?;
+    try std.testing.expectEqualStrings("#section1", atom_table.get(hash_prop.toStringAtom()));
+
+    // searchParams attached on URL
+    const search_params_prop = url_obj.getProperty(try atom_table.intern("searchParams")).?;
+    try std.testing.expect(search_params_prop.isObject());
+
+    const topic_val = try nativeUrlSearchParamsGet(@ptrCast(vm), search_params_prop, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("topic")),
+    });
+    try std.testing.expect(topic_val.isString());
+    try std.testing.expectEqualStrings("standard", atom_table.get(topic_val.toStringAtom()));
+
+    // 3. VM Bytecode Execution of 'new' constructor expressions
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    const script = "let u = new URL('https://davoth.org:8443/docs/index.html?topic=standard#section1'); return u.hostname;";
+    var parser = Parser.init(allocator, script);
+    const ast = try parser.parseProgram();
+    defer ast.deinit(allocator);
+
+    var compiler = BytecodeCompiler.init(allocator, atom_table, "test_new_url");
+    var code = try compiler.compile(ast);
+    defer code.deinit();
+
+    const eval_res = try vm.execute(&code);
+    try std.testing.expect(eval_res.isString());
+    try std.testing.expectEqualStrings("davoth.org", atom_table.get(eval_res.toStringAtom()));
+
+    // 4. VM Bytecode Execution of method call on instance
+    const script_params = "let p = new URLSearchParams('topic=web&v=2'); return p.get('topic');";
+    var parser2 = Parser.init(allocator, script_params);
+    const ast2 = try parser2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var compiler2 = BytecodeCompiler.init(allocator, atom_table, "test_params_get");
+    var code2 = try compiler2.compile(ast2);
+    defer code2.deinit();
+
+    const eval_res2 = try vm.execute(&code2);
+    try std.testing.expect(eval_res2.isString());
+    try std.testing.expectEqualStrings("web", atom_table.get(eval_res2.toStringAtom()));
 }
