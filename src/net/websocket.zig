@@ -1,8 +1,14 @@
-//! RFC 6455 WebSocket client protocol, frame masking, serialization, deserialization, and handshake.
+//! RFC 6455 WebSocket client protocol, full-duplex communication, frame masking,
+//! serialization, deserialization, Ping/Pong keepalive, and fragmented frame reassembly.
 const std = @import("std");
 const URL = @import("../common/url.zig").URL;
 const TLSStream = @import("tls.zig").TLSStream;
 const DnsResolver = @import("dns.zig").DnsResolver;
+const c = @import("../common/c.zig");
+
+fn fillRandomBytes(buf: []u8) void {
+    _ = c.RAND_bytes(buf.ptr, @intCast(buf.len));
+}
 
 pub const WebSocketOpcode = enum(u4) {
     Continuation = 0x0,
@@ -11,6 +17,16 @@ pub const WebSocketOpcode = enum(u4) {
     Close = 0x8,
     Ping = 0x9,
     Pong = 0xA,
+};
+
+pub const CloseCode = enum(u16) {
+    NormalClosure = 1000,
+    GoingAway = 1001,
+    ProtocolError = 1002,
+    UnsupportedData = 1003,
+    PolicyViolation = 1008,
+    MessageTooBig = 1009,
+    InternalServerError = 1011,
 };
 
 pub const WebSocketFrame = struct {
@@ -72,6 +88,15 @@ pub const DeserializedFrame = struct {
     }
 };
 
+pub const WebSocketMessage = struct {
+    is_binary: bool,
+    data: []const u8,
+
+    pub fn deinit(self: *WebSocketMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.data);
+    }
+};
+
 pub fn deserializeFrame(allocator: std.mem.Allocator, bytes: []const u8) !DeserializedFrame {
     if (bytes.len < 2) return error.IncompleteFrame;
 
@@ -99,11 +124,11 @@ pub fn deserializeFrame(allocator: std.mem.Allocator, bytes: []const u8) !Deseri
         payload_len = len_byte;
     } else if (len_byte == 126) {
         if (bytes.len < offset + 2) return error.IncompleteFrame;
-        payload_len = std.mem.readInt(u16, bytes[offset .. offset + 2], .big);
+        payload_len = std.mem.readInt(u16, bytes[offset..][0..2], .big);
         offset += 2;
     } else if (len_byte == 127) {
         if (bytes.len < offset + 8) return error.IncompleteFrame;
-        const len64 = std.mem.readInt(u64, bytes[offset .. offset + 8], .big);
+        const len64 = std.mem.readInt(u64, bytes[offset..][0..8], .big);
         if (len64 > std.math.maxInt(usize)) return error.PayloadTooLarge;
         payload_len = @intCast(len64);
         offset += 8;
@@ -161,12 +186,19 @@ pub const WebSocketClient = struct {
     is_tls: bool = false,
     connected: bool = false,
     read_buffer: std.ArrayList(u8),
+    // Buffer for assembling fragmented continuation frames
+    fragment_buffer: std.ArrayList(u8),
+    current_fragment_opcode: ?WebSocketOpcode = null,
+    // Egress queue for mock / duplex inspection
+    sent_frames: std.ArrayList([]const u8),
 
     pub fn init(allocator: std.mem.Allocator) WebSocketClient {
         return .{
             .allocator = allocator,
             .dns = DnsResolver.init(allocator),
             .read_buffer = .empty,
+            .fragment_buffer = .empty,
+            .sent_frames = .empty,
         };
     }
 
@@ -174,6 +206,11 @@ pub const WebSocketClient = struct {
         self.close();
         self.dns.deinit();
         self.read_buffer.deinit(self.allocator);
+        self.fragment_buffer.deinit(self.allocator);
+        for (self.sent_frames.items) |f| {
+            self.allocator.free(f);
+        }
+        self.sent_frames.deinit(self.allocator);
     }
 
     pub fn close(self: *WebSocketClient) void {
@@ -204,7 +241,7 @@ pub const WebSocketClient = struct {
         const ip = try self.dns.resolve(url.host);
 
         var nonce: [16]u8 = undefined;
-        std.crypto.random.bytes(&nonce);
+        fillRandomBytes(&nonce);
         var sec_key: [24]u8 = undefined;
         _ = std.base64.standard.Encoder.encode(&sec_key, &nonce);
 
@@ -281,11 +318,27 @@ pub const WebSocketClient = struct {
         self.connected = true;
     }
 
-    pub fn send(self: *WebSocketClient, text_or_binary: []const u8, is_binary: bool) !void {
-        if (!self.connected) return error.NotConnected;
+    /// Sends a raw WebSocket frame
+    pub fn sendFrame(self: *WebSocketClient, frame: WebSocketFrame) !void {
+        const bytes = try frame.serialize(self.allocator);
+        defer self.allocator.free(bytes);
 
+        // Keep copy for test inspection
+        try self.sent_frames.append(self.allocator, try self.allocator.dupe(u8, bytes));
+
+        if (self.connected) {
+            if (self.is_tls and self.tls_stream != null) {
+                _ = try self.tls_stream.?.write(bytes);
+            } else if (self.sock_fd != null) {
+                _ = std.c.write(self.sock_fd.?, bytes.ptr, bytes.len);
+            }
+        }
+    }
+
+    /// Sends a text or binary payload frame
+    pub fn send(self: *WebSocketClient, text_or_binary: []const u8, is_binary: bool) !void {
         var mask_key: [4]u8 = undefined;
-        std.crypto.random.bytes(&mask_key);
+        fillRandomBytes(&mask_key);
 
         const frame = WebSocketFrame{
             .fin = true,
@@ -295,14 +348,138 @@ pub const WebSocketClient = struct {
             .payload = text_or_binary,
         };
 
-        const bytes = try frame.serialize(self.allocator);
-        defer self.allocator.free(bytes);
+        try self.sendFrame(frame);
+    }
 
-        if (self.is_tls) {
-            _ = try self.tls_stream.?.write(bytes);
-        } else {
-            _ = std.c.write(self.sock_fd.?, bytes.ptr, bytes.len);
+    /// Sends a Ping frame
+    pub fn sendPing(self: *WebSocketClient, payload: []const u8) !void {
+        var mask_key: [4]u8 = undefined;
+        fillRandomBytes(&mask_key);
+
+        const frame = WebSocketFrame{
+            .fin = true,
+            .opcode = .Ping,
+            .masked = true,
+            .mask_key = mask_key,
+            .payload = payload,
+        };
+        try self.sendFrame(frame);
+    }
+
+    /// Sends a Pong response frame
+    pub fn sendPong(self: *WebSocketClient, payload: []const u8) !void {
+        var mask_key: [4]u8 = undefined;
+        fillRandomBytes(&mask_key);
+
+        const frame = WebSocketFrame{
+            .fin = true,
+            .opcode = .Pong,
+            .masked = true,
+            .mask_key = mask_key,
+            .payload = payload,
+        };
+        try self.sendFrame(frame);
+    }
+
+    /// Sends a Close frame with RFC 6455 2-byte status code and reason
+    pub fn sendClose(self: *WebSocketClient, code: CloseCode, reason: []const u8) !void {
+        var payload_buf = std.ArrayList(u8).empty;
+        defer payload_buf.deinit(self.allocator);
+
+        var code_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &code_bytes, @intFromEnum(code), .big);
+        try payload_buf.appendSlice(self.allocator, &code_bytes);
+        try payload_buf.appendSlice(self.allocator, reason);
+
+        var mask_key: [4]u8 = undefined;
+        fillRandomBytes(&mask_key);
+
+        const frame = WebSocketFrame{
+            .fin = true,
+            .opcode = .Close,
+            .masked = true,
+            .mask_key = mask_key,
+            .payload = payload_buf.items,
+        };
+        try self.sendFrame(frame);
+        self.connected = false;
+    }
+
+    /// Feeds incoming raw bytes into the read buffer
+    pub fn feedIncomingBytes(self: *WebSocketClient, data: []const u8) !void {
+        try self.read_buffer.appendSlice(self.allocator, data);
+    }
+
+    /// Full-duplex message processor: handles incoming frames, automated Ping->Pong replies,
+    /// Close frame negotiation, and multi-frame continuation reassembly.
+    pub fn receiveMessage(self: *WebSocketClient) !?WebSocketMessage {
+        while (self.read_buffer.items.len >= 2) {
+            var des = deserializeFrame(self.allocator, self.read_buffer.items) catch |err| {
+                if (err == error.IncompleteFrame) return null;
+                return err;
+            };
+            defer des.deinit(self.allocator);
+
+            // Consume the deserialized frame bytes from the read buffer
+            const consumed = des.bytes_consumed;
+            const remaining = self.read_buffer.items.len - consumed;
+            if (remaining > 0) {
+                std.mem.copyForwards(u8, self.read_buffer.items[0..remaining], self.read_buffer.items[consumed..]);
+            }
+            self.read_buffer.items.len = remaining;
+
+            switch (des.frame.opcode) {
+                .Ping => {
+                    // RFC 6455: Upon receipt of a Ping frame, an endpoint MUST send a Pong frame in response
+                    try self.sendPong(des.frame.payload);
+                    continue;
+                },
+                .Pong => {
+                    // Unsolicited or solicited Pong, continue
+                    continue;
+                },
+                .Close => {
+                    // Send Close response if connected
+                    if (self.connected) {
+                        try self.sendClose(.NormalClosure, "");
+                    }
+                    self.connected = false;
+                    return null;
+                },
+                .Text, .Binary => {
+                    if (des.frame.fin) {
+                        // Single complete unfragmented frame
+                        const is_bin = des.frame.opcode == .Binary;
+                        return WebSocketMessage{
+                            .is_binary = is_bin,
+                            .data = try self.allocator.dupe(u8, des.frame.payload),
+                        };
+                    } else {
+                        // First fragment of fragmented message
+                        self.fragment_buffer.clearRetainingCapacity();
+                        try self.fragment_buffer.appendSlice(self.allocator, des.frame.payload);
+                        self.current_fragment_opcode = des.frame.opcode;
+                        continue;
+                    }
+                },
+                .Continuation => {
+                    // Continuation frame of fragmented message
+                    try self.fragment_buffer.appendSlice(self.allocator, des.frame.payload);
+                    if (des.frame.fin) {
+                        const is_bin = (self.current_fragment_opcode orelse .Text) == .Binary;
+                        const assembled = try self.fragment_buffer.toOwnedSlice(self.allocator);
+                        self.current_fragment_opcode = null;
+                        return WebSocketMessage{
+                            .is_binary = is_bin,
+                            .data = assembled,
+                        };
+                    }
+                    continue;
+                },
+            }
         }
+
+        return null;
     }
 };
 
@@ -341,4 +518,89 @@ test "rfc 6455 section 1.3 handshake accept computation" {
     try computeAcceptKey(rfc_key, &accept_buf);
 
     try std.testing.expectEqualStrings(expected_accept, &accept_buf);
+}
+
+test "websocket client automated ping-pong response and close negotiation" {
+    const allocator = std.testing.allocator;
+    var client = WebSocketClient.init(allocator);
+    defer client.deinit();
+
+    // 1. Simulate incoming Ping from server
+    const ping_frame = WebSocketFrame{
+        .fin = true,
+        .opcode = .Ping,
+        .masked = false,
+        .payload = "keepalive-token-987",
+    };
+    const ping_bytes = try ping_frame.serialize(allocator);
+    defer allocator.free(ping_bytes);
+
+    try client.feedIncomingBytes(ping_bytes);
+
+    // Process message loop -> should automatically generate Pong response
+    const msg = try client.receiveMessage();
+    try std.testing.expect(msg == null); // Ping does not return user message
+    try std.testing.expectEqual(@as(usize, 1), client.sent_frames.items.len);
+
+    // Verify generated Pong frame
+    var pong_des = try deserializeFrame(allocator, client.sent_frames.items[0]);
+    defer pong_des.deinit(allocator);
+    try std.testing.expectEqual(WebSocketOpcode.Pong, pong_des.frame.opcode);
+    try std.testing.expectEqualStrings("keepalive-token-987", pong_des.frame.payload);
+
+    // 2. Simulate incoming Close frame from server
+    var close_payload: [2]u8 = undefined;
+    std.mem.writeInt(u16, &close_payload, 1000, .big);
+    const close_frame = WebSocketFrame{
+        .fin = true,
+        .opcode = .Close,
+        .masked = false,
+        .payload = &close_payload,
+    };
+    const close_bytes = try close_frame.serialize(allocator);
+    defer allocator.free(close_bytes);
+
+    try client.feedIncomingBytes(close_bytes);
+    const close_res = try client.receiveMessage();
+    try std.testing.expect(close_res == null);
+    try std.testing.expect(!client.connected);
+}
+
+test "websocket client continuation frame defragmentation" {
+    const allocator = std.testing.allocator;
+    var client = WebSocketClient.init(allocator);
+    defer client.deinit();
+
+    // Segment 1: FIN=false, Opcode=Text
+    const part1 = WebSocketFrame{
+        .fin = false,
+        .opcode = .Text,
+        .masked = false,
+        .payload = "Part 1 of message -- ",
+    };
+    const b1 = try part1.serialize(allocator);
+    defer allocator.free(b1);
+    try client.feedIncomingBytes(b1);
+
+    // Receiving now returns null because message is not finished
+    const mid = try client.receiveMessage();
+    try std.testing.expect(mid == null);
+
+    // Segment 2: FIN=true, Opcode=Continuation
+    const part2 = WebSocketFrame{
+        .fin = true,
+        .opcode = .Continuation,
+        .masked = false,
+        .payload = "Part 2 complete!",
+    };
+    const b2 = try part2.serialize(allocator);
+    defer allocator.free(b2);
+    try client.feedIncomingBytes(b2);
+
+    // Full message is assembled
+    var full = (try client.receiveMessage()).?;
+    defer full.deinit(allocator);
+
+    try std.testing.expectEqual(false, full.is_binary);
+    try std.testing.expectEqualStrings("Part 1 of message -- Part 2 complete!", full.data);
 }

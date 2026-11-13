@@ -48,17 +48,26 @@ pub const Parser = struct {
 
     pub fn parseProgram(self: *Parser) !*Node {
         var statements: std.ArrayList(*Node) = .empty;
-        errdefer statements.deinit(self.allocator);
+        errdefer {
+            for (statements.items) |stmt| stmt.deinit(self.allocator);
+            statements.deinit(self.allocator);
+        }
 
         while (self.current.token_type != .Eof) {
             const stmt = try self.parseDeclarationOrStatement();
             try statements.append(self.allocator, stmt);
         }
 
+        const prog_slice = try statements.toOwnedSlice(self.allocator);
+        errdefer {
+            for (prog_slice) |stmt| stmt.deinit(self.allocator);
+            self.allocator.free(prog_slice);
+        }
+
         const prog_node = try self.allocator.create(Node);
         prog_node.* = .{
             .data = .{
-                .Program = try statements.toOwnedSlice(self.allocator),
+                .Program = prog_slice,
             },
         };
         return prog_node;
@@ -100,6 +109,7 @@ pub const Parser = struct {
 
         // Expression statement
         const expr = try self.parseExpression();
+        errdefer expr.deinit(self.allocator);
         _ = self.match(.Semicolon);
         const node = try self.allocator.create(Node);
         node.* = .{ .data = .{ .ExprStatement = expr } };
@@ -115,6 +125,7 @@ pub const Parser = struct {
         if (self.match(.Equal)) {
             init_expr = try self.parseExpression();
         }
+        errdefer if (init_expr) |ie| ie.deinit(self.allocator);
         _ = self.match(.Semicolon);
 
         const node = try self.allocator.create(Node);
@@ -150,13 +161,17 @@ pub const Parser = struct {
         try self.consume(.LBrace, "Expected '{' before function body");
 
         const body = try self.parseBlock();
+        errdefer body.deinit(self.allocator);
+
+        const params_slice = try params.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(params_slice);
 
         const node = try self.allocator.create(Node);
         node.* = .{
             .data = .{
                 .FunctionDecl = .{
                     .name = name,
-                    .params = try params.toOwnedSlice(self.allocator),
+                    .params = params_slice,
                     .body = body,
                     .is_async = is_async,
                 },
@@ -167,7 +182,10 @@ pub const Parser = struct {
 
     fn parseBlock(self: *Parser) anyerror!*Node {
         var stmts: std.ArrayList(*Node) = .empty;
-        errdefer stmts.deinit(self.allocator);
+        errdefer {
+            for (stmts.items) |s| s.deinit(self.allocator);
+            stmts.deinit(self.allocator);
+        }
 
         while (self.current.token_type != .RBrace and self.current.token_type != .Eof) {
             const stmt = try self.parseDeclarationOrStatement();
@@ -175,10 +193,16 @@ pub const Parser = struct {
         }
         try self.consume(.RBrace, "Expected '}'");
 
+        const block_slice = try stmts.toOwnedSlice(self.allocator);
+        errdefer {
+            for (block_slice) |s| s.deinit(self.allocator);
+            self.allocator.free(block_slice);
+        }
+
         const node = try self.allocator.create(Node);
         node.* = .{
             .data = .{
-                .Block = try stmts.toOwnedSlice(self.allocator),
+                .Block = block_slice,
             },
         };
         return node;
@@ -187,13 +211,16 @@ pub const Parser = struct {
     fn parseIfStatement(self: *Parser) anyerror!*Node {
         try self.consume(.LParen, "Expected '('");
         const cond = try self.parseExpression();
+        errdefer cond.deinit(self.allocator);
         try self.consume(.RParen, "Expected ')'");
 
         const consequent = try self.parseDeclarationOrStatement();
+        errdefer consequent.deinit(self.allocator);
         var alternate: ?*Node = null;
         if (self.match(.KwElse)) {
             alternate = try self.parseDeclarationOrStatement();
         }
+        errdefer if (alternate) |alt| alt.deinit(self.allocator);
 
         const node = try self.allocator.create(Node);
         node.* = .{
@@ -211,8 +238,10 @@ pub const Parser = struct {
     fn parseWhileStatement(self: *Parser) anyerror!*Node {
         try self.consume(.LParen, "Expected '('");
         const cond = try self.parseExpression();
+        errdefer cond.deinit(self.allocator);
         try self.consume(.RParen, "Expected ')'");
         const body = try self.parseDeclarationOrStatement();
+        errdefer body.deinit(self.allocator);
 
         const node = try self.allocator.create(Node);
         node.* = .{
@@ -237,20 +266,24 @@ pub const Parser = struct {
                 try self.consume(.Semicolon, "Expected ';'");
             }
         }
+        errdefer if (init_node) |in| in.deinit(self.allocator);
 
         var cond_node: ?*Node = null;
         if (self.current.token_type != .Semicolon) {
             cond_node = try self.parseExpression();
         }
+        errdefer if (cond_node) |cn| cn.deinit(self.allocator);
         try self.consume(.Semicolon, "Expected ';'");
 
         var update_node: ?*Node = null;
         if (self.current.token_type != .RParen) {
             update_node = try self.parseExpression();
         }
+        errdefer if (update_node) |un| un.deinit(self.allocator);
         try self.consume(.RParen, "Expected ')'");
 
         const body = try self.parseDeclarationOrStatement();
+        errdefer body.deinit(self.allocator);
 
         const node = try self.allocator.create(Node);
         node.* = .{
@@ -271,6 +304,7 @@ pub const Parser = struct {
         if (self.current.token_type != .Semicolon and self.current.token_type != .RBrace) {
             value = try self.parseExpression();
         }
+        errdefer if (value) |val| val.deinit(self.allocator);
         _ = self.match(.Semicolon);
 
         const node = try self.allocator.create(Node);
@@ -280,6 +314,7 @@ pub const Parser = struct {
 
     fn parseThrowStatement(self: *Parser) anyerror!*Node {
         const expr = try self.parseExpression();
+        errdefer expr.deinit(self.allocator);
         _ = self.match(.Semicolon);
 
         const node = try self.allocator.create(Node);
@@ -290,6 +325,7 @@ pub const Parser = struct {
     fn parseTryCatchStatement(self: *Parser) anyerror!*Node {
         try self.consume(.LBrace, "Expected '{'");
         const try_blk = try self.parseBlock();
+        errdefer try_blk.deinit(self.allocator);
 
         var catch_param: ?[]const u8 = null;
         var catch_blk: ?*Node = null;
@@ -303,12 +339,14 @@ pub const Parser = struct {
             try self.consume(.LBrace, "Expected '{'");
             catch_blk = try self.parseBlock();
         }
+        errdefer if (catch_blk) |cb| cb.deinit(self.allocator);
 
         var fin_blk: ?*Node = null;
         if (self.match(.KwFinally)) {
             try self.consume(.LBrace, "Expected '{'");
             fin_blk = try self.parseBlock();
         }
+        errdefer if (fin_blk) |fb| fb.deinit(self.allocator);
 
         const node = try self.allocator.create(Node);
         node.* = .{
@@ -330,9 +368,11 @@ pub const Parser = struct {
 
     fn parseAssignment(self: *Parser) anyerror!*Node {
         const left = try self.parseLogicalOr();
+        errdefer left.deinit(self.allocator);
 
         if (self.match(.Equal)) {
             const right = try self.parseAssignment();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -350,8 +390,10 @@ pub const Parser = struct {
 
     fn parseLogicalOr(self: *Parser) anyerror!*Node {
         var left = try self.parseLogicalAnd();
+        errdefer left.deinit(self.allocator);
         while (self.match(.PipePipe)) {
             const right = try self.parseLogicalAnd();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -369,8 +411,10 @@ pub const Parser = struct {
 
     fn parseLogicalAnd(self: *Parser) anyerror!*Node {
         var left = try self.parseEquality();
+        errdefer left.deinit(self.allocator);
         while (self.match(.AmpersandAmpersand)) {
             const right = try self.parseEquality();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -388,6 +432,7 @@ pub const Parser = struct {
 
     fn parseEquality(self: *Parser) anyerror!*Node {
         var left = try self.parseRelational();
+        errdefer left.deinit(self.allocator);
         while (true) {
             var op: ?BinaryOperator = null;
             if (self.match(.EqualEqualEqual)) {
@@ -403,6 +448,7 @@ pub const Parser = struct {
             }
 
             const right = try self.parseRelational();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -420,6 +466,7 @@ pub const Parser = struct {
 
     fn parseRelational(self: *Parser) anyerror!*Node {
         var left = try self.parseAdditive();
+        errdefer left.deinit(self.allocator);
         while (true) {
             var op: ?BinaryOperator = null;
             if (self.match(.Less)) {
@@ -435,6 +482,7 @@ pub const Parser = struct {
             }
 
             const right = try self.parseAdditive();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -452,6 +500,7 @@ pub const Parser = struct {
 
     fn parseAdditive(self: *Parser) anyerror!*Node {
         var left = try self.parseMultiplicative();
+        errdefer left.deinit(self.allocator);
         while (true) {
             var op: ?BinaryOperator = null;
             if (self.match(.Plus)) {
@@ -463,6 +512,7 @@ pub const Parser = struct {
             }
 
             const right = try self.parseMultiplicative();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -480,6 +530,7 @@ pub const Parser = struct {
 
     fn parseMultiplicative(self: *Parser) anyerror!*Node {
         var left = try self.parseUnary();
+        errdefer left.deinit(self.allocator);
         while (true) {
             var op: ?BinaryOperator = null;
             if (self.match(.Star)) {
@@ -493,6 +544,7 @@ pub const Parser = struct {
             }
 
             const right = try self.parseUnary();
+            errdefer right.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{
                 .data = .{
@@ -511,18 +563,21 @@ pub const Parser = struct {
     fn parseUnary(self: *Parser) anyerror!*Node {
         if (self.match(.Bang)) {
             const expr = try self.parseUnary();
+            errdefer expr.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{ .data = .{ .Unary = .{ .op = .Not, .expr = expr } } };
             return node;
         }
         if (self.match(.Minus)) {
             const expr = try self.parseUnary();
+            errdefer expr.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{ .data = .{ .Unary = .{ .op = .Negate, .expr = expr } } };
             return node;
         }
         if (self.match(.KwAwait)) {
             const expr = try self.parseUnary();
+            errdefer expr.deinit(self.allocator);
             const node = try self.allocator.create(Node);
             node.* = .{ .data = .{ .Await = expr } };
             return node;
@@ -532,11 +587,15 @@ pub const Parser = struct {
 
     fn parseCallOrMember(self: *Parser) anyerror!*Node {
         var expr = try self.parsePrimary();
+        errdefer expr.deinit(self.allocator);
 
         while (true) {
             if (self.match(.LParen)) {
                 var args: std.ArrayList(*Node) = .empty;
-                errdefer args.deinit(self.allocator);
+                errdefer {
+                    for (args.items) |arg| arg.deinit(self.allocator);
+                    args.deinit(self.allocator);
+                }
                 if (self.current.token_type != .RParen) {
                     while (true) {
                         const arg = try self.parseExpression();
@@ -546,12 +605,18 @@ pub const Parser = struct {
                 }
                 try self.consume(.RParen, "Expected ')' after arguments");
 
+                const args_slice = try args.toOwnedSlice(self.allocator);
+                errdefer {
+                    for (args_slice) |arg| arg.deinit(self.allocator);
+                    self.allocator.free(args_slice);
+                }
+
                 const call_node = try self.allocator.create(Node);
                 call_node.* = .{
                     .data = .{
                         .Call = .{
                             .callee = expr,
-                            .arguments = try args.toOwnedSlice(self.allocator),
+                            .arguments = args_slice,
                         },
                     },
                 };
@@ -616,6 +681,7 @@ pub const Parser = struct {
         }
         if (self.match(.LParen)) {
             const expr = try self.parseExpression();
+            errdefer expr.deinit(self.allocator);
             try self.consume(.RParen, "Expected ')'");
             return expr;
         }

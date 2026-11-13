@@ -6,6 +6,7 @@ const CSSParser = @import("../css/parser.zig").CSSParser;
 const JSParser = @import("../js/parser.zig").Parser;
 const URL = @import("../common/url.zig").URL;
 const quic = @import("../net/http3.zig");
+const websocket = @import("../net/websocket.zig");
 
 pub const FuzzTarget = enum {
     Html,
@@ -13,6 +14,7 @@ pub const FuzzTarget = enum {
     JavaScript,
     Url,
     Quic,
+    WebSocket,
 };
 
 pub const FuzzReport = struct {
@@ -177,6 +179,30 @@ pub const Fuzzer = struct {
             .crashes = crashes,
         };
     }
+
+    /// Fuzzes RFC 6455 WebSocket frame deserialization with randomized payloads
+    pub fn fuzzWebSocket(self: *Fuzzer, iterations: usize) FuzzReport {
+        const random = self.prng.random();
+        const crashes: usize = 0;
+
+        var i: usize = 0;
+        while (i < iterations) : (i += 1) {
+            var buf: [128]u8 = undefined;
+            const len = random.uintLessThan(usize, buf.len);
+            random.bytes(buf[0..len]);
+
+            if (websocket.deserializeFrame(self.allocator, buf[0..len])) |des_val| {
+                var des = des_val;
+                des.deinit(self.allocator);
+            } else |_| {}
+        }
+
+        return .{
+            .target = .WebSocket,
+            .iterations = iterations,
+            .crashes = crashes,
+        };
+    }
 };
 
 test "parser fuzzer execution on html, css, js, url and quic" {
@@ -198,4 +224,31 @@ test "parser fuzzer execution on html, css, js, url and quic" {
 
     const r_quic = fuzzer.fuzzQuic(50);
     try std.testing.expectEqual(@as(usize, 0), r_quic.crashes);
+
+    const r_ws = fuzzer.fuzzWebSocket(50);
+    try std.testing.expectEqual(@as(usize, 0), r_ws.crashes);
+}
+
+test "500-iteration memory leak fuzzing with std.testing.allocator" {
+    const allocator = std.testing.allocator;
+    var fuzzer = try Fuzzer.init(allocator, 0xfeedfacecafebeef);
+    defer fuzzer.deinit();
+
+    const r_html = fuzzer.fuzzHtml(500);
+    try std.testing.expectEqual(@as(usize, 0), r_html.crashes);
+
+    const r_css = fuzzer.fuzzCss(500);
+    try std.testing.expectEqual(@as(usize, 0), r_css.crashes);
+
+    const r_js = fuzzer.fuzzJavaScript(500);
+    try std.testing.expectEqual(@as(usize, 0), r_js.crashes);
+
+    const r_url = fuzzer.fuzzUrl(500);
+    try std.testing.expectEqual(@as(usize, 0), r_url.crashes);
+
+    const r_quic = fuzzer.fuzzQuic(500);
+    try std.testing.expectEqual(@as(usize, 0), r_quic.crashes);
+
+    const r_ws = fuzzer.fuzzWebSocket(500);
+    try std.testing.expectEqual(@as(usize, 0), r_ws.crashes);
 }

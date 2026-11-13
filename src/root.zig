@@ -46,6 +46,7 @@ pub const dom = struct {
     pub const events = @import("dom/events.zig");
     pub const mutation = @import("dom/mutation.zig");
     pub const components = @import("dom/components.zig");
+    pub const forms = @import("dom/forms.zig");
 };
 
 pub const css = struct {
@@ -54,6 +55,7 @@ pub const css = struct {
     pub const properties = @import("css/properties.zig");
     pub const parser = @import("css/parser.zig");
     pub const style = @import("css/style.zig");
+    pub const animation = @import("css/animation.zig");
 };
 
 pub const layout = struct {
@@ -211,4 +213,8 @@ test "subsystem full verification" {
     _ = @import("devtools/inspector.zig");
     _ = @import("devtools/network.zig");
     _ = @import("devtools/debugger.zig");
+    _ = @import("net/websocket.zig");
+    _ = @import("css/animation.zig");
+    _ = @import("dom/forms.zig");
+    _ = @import("tools/fuzzer.zig");
 }

@@ -3,6 +3,7 @@ const std = @import("std");
 const posix = std.posix;
 const c = @import("../common/c.zig");
 const SubsystemMemoryTracker = @import("../common/memory.zig").SubsystemMemoryTracker;
+const time = @import("../common/time.zig");
 
 // ============================================================================
 // 1. QUIC Variable-Length Integer Encoding (RFC 9000 §16)
@@ -16,15 +17,15 @@ pub const VarInt = struct {
             return 1;
         } else if (val <= 16383) {
             if (buf.len < 2) return error.BufferTooSmall;
-            std.mem.writeInt(u16, buf[0..2], @as(u16, val) | 0x4000, .big);
+            std.mem.writeInt(u16, buf[0..2], @as(u16, @truncate(val)) | 0x4000, .big);
             return 2;
         } else if (val <= 1073741823) {
             if (buf.len < 4) return error.BufferTooSmall;
-            std.mem.writeInt(u32, buf[0..4], @as(u32, val) | 0x8000_0000, .big);
+            std.mem.writeInt(u32, buf[0..4], @as(u32, @truncate(val)) | 0x8000_0000, .big);
             return 4;
         } else {
             if (buf.len < 8) return error.BufferTooSmall;
-            std.mem.writeInt(u64, buf[0..8], @as(u64, val) | 0xC000_0000_0000_0000, .big);
+            std.mem.writeInt(u64, buf[0..8], @as(u64, @truncate(val)) | 0xC000_0000_0000_0000, .big);
             return 8;
         }
     }
@@ -75,7 +76,7 @@ pub const ConnectionId = struct {
     pub fn initRandom() ConnectionId {
         var cid = ConnectionId{ .len = 8 };
         // Fill 8 random bytes
-        const seed: u64 = @bitCast(std.time.nanoTimestamp());
+        const seed: u64 = @bitCast(time.timestamp());
         var prng = std.Random.DefaultPrng.init(seed);
         prng.random().bytes(cid.bytes[0..8]);
         return cid;
