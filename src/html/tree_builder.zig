@@ -134,6 +134,99 @@ pub const TreeBuilder = struct {
 
         return self.document;
     }
+
+    pub fn parseFragment(allocator: std.mem.Allocator, atom_table: *AtomTable, context_node: *Node, fragment_html: []const u8) !void {
+        var builder = TreeBuilder{
+            .allocator = allocator,
+            .atom_table = atom_table,
+            .tokenizer = HTMLTokenizer.init(fragment_html),
+            .mode = .InBody,
+            .open_elements = .empty,
+            .document = context_node,
+        };
+        defer builder.deinit();
+
+        try builder.open_elements.append(allocator, context_node);
+
+        while (true) {
+            var token = try builder.tokenizer.nextToken(allocator);
+            defer token.deinit(allocator);
+
+            if (token.token_type == .EOF) break;
+
+            switch (token.token_type) {
+                .StartTag => {
+                    const tag_lower = try allocator.dupe(u8, token.data);
+                    defer allocator.free(tag_lower);
+                    for (tag_lower) |*c| c.* = std.ascii.toLower(c.*);
+
+                    const tag_atom = try atom_table.intern(tag_lower);
+                    const elem = try Node.create(allocator, .Element, tag_atom);
+
+                    for (token.attributes.items) |attr| {
+                        const attr_name_lower = try allocator.dupe(u8, attr.name);
+                        defer allocator.free(attr_name_lower);
+                        for (attr_name_lower) |*c| c.* = std.ascii.toLower(c.*);
+
+                        const attr_atom = try atom_table.intern(attr_name_lower);
+                        try elem.setAttribute(allocator, attr_atom, attr.value);
+                    }
+
+                    if (builder.open_elements.items.len > 0) {
+                        const current = builder.open_elements.items[builder.open_elements.items.len - 1];
+                        try current.appendChild(allocator, elem);
+                    } else {
+                        try context_node.appendChild(allocator, elem);
+                    }
+
+                    const is_void = std.mem.eql(u8, tag_lower, "meta") or
+                        std.mem.eql(u8, tag_lower, "link") or
+                        std.mem.eql(u8, tag_lower, "img") or
+                        std.mem.eql(u8, tag_lower, "br") or
+                        std.mem.eql(u8, tag_lower, "hr") or
+                        std.mem.eql(u8, tag_lower, "input") or
+                        token.self_closing;
+
+                    if (!is_void) {
+                        try builder.open_elements.append(allocator, elem);
+                    }
+                },
+                .EndTag => {
+                    const tag_lower = try allocator.dupe(u8, token.data);
+                    defer allocator.free(tag_lower);
+                    for (tag_lower) |*c| c.* = std.ascii.toLower(c.*);
+
+                    const tag_atom = try atom_table.intern(tag_lower);
+
+                    var i = builder.open_elements.items.len;
+                    while (i > 1) {
+                        i -= 1;
+                        if (builder.open_elements.items[i].tag_name == tag_atom) {
+                            builder.open_elements.shrinkRetainingCapacity(i);
+                            break;
+                        }
+                    }
+                },
+                .Character => {
+                    if (builder.open_elements.items.len > 0) {
+                        const current = builder.open_elements.items[builder.open_elements.items.len - 1];
+                        const text_node = try Node.createText(allocator, token.data);
+                        try current.appendChild(allocator, text_node);
+                    }
+                },
+                .Comment => {
+                    const comment_atom = try atom_table.intern("#comment");
+                    const comment_node = try Node.create(allocator, .Comment, comment_atom);
+                    comment_node.text_content = try allocator.dupe(u8, token.data);
+                    if (builder.open_elements.items.len > 0) {
+                        const current = builder.open_elements.items[builder.open_elements.items.len - 1];
+                        try current.appendChild(allocator, comment_node);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
 };
 
 test "tree builder parse html into dom" {

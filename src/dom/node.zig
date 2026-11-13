@@ -492,6 +492,136 @@ pub const Node = struct {
         return null;
     }
 
+    // WHATWG textContent
+    pub fn getTextContent(self: *const Node, allocator: std.mem.Allocator) anyerror![]u8 {
+        if (self.node_type == .Text or self.node_type == .Comment) {
+            return allocator.dupe(u8, self.text_content orelse "");
+        }
+        var list = std.ArrayList(u8).empty;
+        errdefer list.deinit(allocator);
+        try self.collectText(&list, allocator);
+        return list.toOwnedSlice(allocator);
+    }
+
+    fn collectText(self: *const Node, out: *std.ArrayList(u8), allocator: std.mem.Allocator) anyerror!void {
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.node_type == .Text) {
+                if (child.text_content) |tc| {
+                    try out.appendSlice(allocator, tc);
+                }
+            } else if (child.node_type == .Element) {
+                try child.collectText(out, allocator);
+            }
+            curr = child.next_sibling;
+        }
+    }
+
+    pub fn setTextContent(self: *Node, allocator: std.mem.Allocator, text: []const u8) !void {
+        if (self.node_type == .Text or self.node_type == .Comment) {
+            if (self.text_content) |old| allocator.free(old);
+            self.text_content = try allocator.dupe(u8, text);
+            return;
+        }
+
+        var curr = self.first_child;
+        while (curr) |child| {
+            const next = child.next_sibling;
+            child.deinit(allocator);
+            curr = next;
+        }
+        self.first_child = null;
+        self.last_child = null;
+
+        if (text.len > 0) {
+            const tn = try Node.createText(allocator, text);
+            try self.appendChild(allocator, tn);
+        }
+    }
+
+    // WHATWG innerHTML and outerHTML
+    pub fn getInnerHTML(self: *const Node, allocator: std.mem.Allocator, table: *AtomTable) anyerror![]u8 {
+        var list = std.ArrayList(u8).empty;
+        errdefer list.deinit(allocator);
+
+        var curr = self.first_child;
+        while (curr) |child| {
+            try child.serializeTo(allocator, table, &list);
+            curr = child.next_sibling;
+        }
+
+        return list.toOwnedSlice(allocator);
+    }
+
+    pub fn getOuterHTML(self: *const Node, allocator: std.mem.Allocator, table: *AtomTable) anyerror![]u8 {
+        var list = std.ArrayList(u8).empty;
+        errdefer list.deinit(allocator);
+        try self.serializeTo(allocator, table, &list);
+        return list.toOwnedSlice(allocator);
+    }
+
+    pub fn setInnerHTML(self: *Node, allocator: std.mem.Allocator, table: *AtomTable, html: []const u8) !void {
+        var curr = self.first_child;
+        while (curr) |child| {
+            const next = child.next_sibling;
+            child.deinit(allocator);
+            curr = next;
+        }
+        self.first_child = null;
+        self.last_child = null;
+
+        const TreeBuilder = @import("../html/tree_builder.zig").TreeBuilder;
+        try TreeBuilder.parseFragment(allocator, table, self, html);
+    }
+
+    fn serializeTo(self: *const Node, allocator: std.mem.Allocator, table: *AtomTable, out: *std.ArrayList(u8)) anyerror!void {
+        switch (self.node_type) {
+            .Text => {
+                try out.appendSlice(allocator, self.text_content orelse "");
+            },
+            .Comment => {
+                try out.appendSlice(allocator, "<!--");
+                try out.appendSlice(allocator, self.text_content orelse "");
+                try out.appendSlice(allocator, "-->");
+            },
+            .Element => {
+                const tag = table.get(self.tag_name);
+                try out.append(allocator, '<');
+                try out.appendSlice(allocator, tag);
+                for (self.attributes.items) |attr| {
+                    try out.append(allocator, ' ');
+                    try out.appendSlice(allocator, table.get(attr.name));
+                    try out.appendSlice(allocator, "=\"");
+                    try out.appendSlice(allocator, attr.value);
+                    try out.append(allocator, '\"');
+                }
+
+                const is_void = std.mem.eql(u8, tag, "img") or
+                    std.mem.eql(u8, tag, "br") or
+                    std.mem.eql(u8, tag, "hr") or
+                    std.mem.eql(u8, tag, "input") or
+                    std.mem.eql(u8, tag, "meta") or
+                    std.mem.eql(u8, tag, "link");
+
+                if (is_void) {
+                    try out.append(allocator, '>');
+                    return;
+                }
+
+                try out.append(allocator, '>');
+                var curr = self.first_child;
+                while (curr) |child| {
+                    try child.serializeTo(allocator, table, out);
+                    curr = child.next_sibling;
+                }
+                try out.appendSlice(allocator, "</");
+                try out.appendSlice(allocator, tag);
+                try out.append(allocator, '>');
+            },
+            else => {},
+        }
+    }
+
     pub fn removeAttribute(self: *Node, allocator: std.mem.Allocator, name: AtomId) bool {
         for (self.attributes.items, 0..) |attr, i| {
             if (attr.name == name) {
@@ -845,4 +975,43 @@ test "node classlist and dataset" {
     try std.testing.expectEqualStrings("submit", el.getDataset(table, "data-action").?);
     try std.testing.expectEqualStrings("42", el.getDataset(table, "user-id").?);
     try std.testing.expect(el.getDataset(table, "missing") == null);
+}
+
+test "node textcontent innerhtml and outerhtml" {
+    const allocator = std.testing.allocator;
+    const table = try AtomTable.init(allocator);
+    defer table.deinit();
+
+    const root = try Node.create(allocator, .Element, try table.intern("div"));
+    defer root.deinit(allocator);
+    try root.setAttribute(allocator, try table.intern("id"), "panel");
+
+    // 1. setInnerHTML dynamic fragment parsing
+    try root.setInnerHTML(allocator, table, "<p class=\"info\">Hello <strong>World</strong></p><button>Submit</button>");
+
+    // Verify children structure
+    try std.testing.expectEqual(@as(usize, 2), root.childElementCount());
+    const p_elem = root.firstElementChild().?;
+    try std.testing.expectEqualStrings("info", p_elem.getAttribute(try table.intern("class")).?);
+
+    // 2. getTextContent recursive collection
+    const text_all = try root.getTextContent(allocator);
+    defer allocator.free(text_all);
+    try std.testing.expectEqualStrings("Hello WorldSubmit", text_all);
+
+    // 3. getInnerHTML and getOuterHTML serialization
+    const inner_html = try root.getInnerHTML(allocator, table);
+    defer allocator.free(inner_html);
+    try std.testing.expectEqualStrings("<p class=\"info\">Hello <strong>World</strong></p><button>Submit</button>", inner_html);
+
+    const outer_html = try root.getOuterHTML(allocator, table);
+    defer allocator.free(outer_html);
+    try std.testing.expectEqualStrings("<div id=\"panel\"><p class=\"info\">Hello <strong>World</strong></p><button>Submit</button></div>", outer_html);
+
+    // 4. setTextContent replacing children
+    try root.setTextContent(allocator, "Just Plain Text");
+    try std.testing.expectEqual(@as(usize, 0), root.childElementCount());
+    const updated_text = try root.getTextContent(allocator);
+    defer allocator.free(updated_text);
+    try std.testing.expectEqualStrings("Just Plain Text", updated_text);
 }

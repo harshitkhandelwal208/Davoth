@@ -228,6 +228,23 @@ pub fn initBuiltins(vm: *VM) !void {
     try ws_fn.setProperty(alloc, try table.intern("CLOSING"), JSValue.fromInt32(2));
     try ws_fn.setProperty(alloc, try table.intern("CLOSED"), JSValue.fromInt32(3));
     try global.setProperty(alloc, try table.intern("WebSocket"), JSValue.fromObject(ws_fn));
+
+    // document Web API
+    const doc_obj = try vm.gc.allocateObject(null);
+    const body_elem = try createJsElement(vm, "body");
+    const head_elem = try createJsElement(vm, "head");
+
+    try doc_obj.setProperty(alloc, try table.intern("body"), JSValue.fromObject(body_elem));
+    try doc_obj.setProperty(alloc, try table.intern("head"), JSValue.fromObject(head_elem));
+    try doc_obj.setProperty(alloc, try table.intern("title"), JSValue.fromStringAtom(try table.intern("Davoth Browser")));
+
+    const create_elem_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateElement, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createElement"), JSValue.fromObject(create_elem_fn));
+
+    const get_elem_id_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementById, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementById"), JSValue.fromObject(get_elem_id_fn));
+
+    try global.setProperty(alloc, try table.intern("document"), JSValue.fromObject(doc_obj));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -1464,6 +1481,297 @@ fn nativeWebSocketClose(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) 
     return JSValue.undefined_val;
 }
 
+// DOM Element and Document Web APIs
+fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
+    const inst = try vm.gc.allocateObject(null);
+    const tag_atom = try vm.atom_table.intern(tag);
+
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("tagName"), JSValue.fromStringAtom(tag_atom));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(tag_atom));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(1));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("id"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("className"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+
+    const children_arr = try createArray(vm, &[_]JSValue{});
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_children"), JSValue.fromObject(children_arr));
+
+    const style_obj = try vm.gc.allocateObject(null);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("style"), JSValue.fromObject(style_obj));
+
+    const dataset_obj = try vm.gc.allocateObject(null);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("dataset"), JSValue.fromObject(dataset_obj));
+
+    // classList
+    const class_list_obj = try vm.gc.allocateObject(null);
+    const cl_add_fn = try vm.gc.allocateFunction(null, nativeClassListAdd, @ptrCast(vm));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("add"), JSValue.fromObject(cl_add_fn));
+
+    const cl_remove_fn = try vm.gc.allocateFunction(null, nativeClassListRemove, @ptrCast(vm));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("remove"), JSValue.fromObject(cl_remove_fn));
+
+    const cl_contains_fn = try vm.gc.allocateFunction(null, nativeClassListContains, @ptrCast(vm));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("contains"), JSValue.fromObject(cl_contains_fn));
+
+    const cl_toggle_fn = try vm.gc.allocateFunction(null, nativeClassListToggle, @ptrCast(vm));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("toggle"), JSValue.fromObject(cl_toggle_fn));
+
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("classList"), JSValue.fromObject(class_list_obj));
+
+    // Element methods
+    const get_attr_fn = try vm.gc.allocateFunction(null, nativeElementGetAttribute, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getAttribute"), JSValue.fromObject(get_attr_fn));
+
+    const set_attr_fn = try vm.gc.allocateFunction(null, nativeElementSetAttribute, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("setAttribute"), JSValue.fromObject(set_attr_fn));
+
+    const append_child_fn = try vm.gc.allocateFunction(null, nativeElementAppendChild, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("appendChild"), JSValue.fromObject(append_child_fn));
+
+    const remove_child_fn = try vm.gc.allocateFunction(null, nativeElementRemoveChild, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("removeChild"), JSValue.fromObject(remove_child_fn));
+
+    return inst;
+}
+
+fn nativeElementGetAttribute(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.null_val;
+    if (args.len == 0) return JSValue.null_val;
+
+    const attr_name = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.null_val,
+    };
+
+    const atom = vm.atom_table.map.get(attr_name) orelse return JSValue.null_val;
+    return inst.getProperty(atom) orelse JSValue.null_val;
+}
+
+fn nativeElementSetAttribute(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len < 2) return JSValue.undefined_val;
+
+    const attr_name = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.undefined_val,
+    };
+
+    const atom = try vm.atom_table.intern(attr_name);
+    try inst.setProperty(vm.allocator, atom, args[1]);
+
+    if (std.mem.eql(u8, attr_name, "id")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("id"), args[1]);
+    } else if (std.mem.eql(u8, attr_name, "class")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("className"), args[1]);
+    }
+
+    return JSValue.undefined_val;
+}
+
+fn nativeElementAppendChild(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isObject()) return JSValue.undefined_val;
+
+    const child_obj = args[0].toObject().?;
+    try child_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
+
+    const children_atom = try vm.atom_table.intern("_children");
+    const children_arr = (inst.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
+    if (children_arr) |c_arr| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, c_arr, &items);
+        try items.append(vm.allocator, args[0]);
+
+        const new_arr = try createArray(vm, items.items);
+        try inst.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
+    }
+
+    return args[0];
+}
+
+fn nativeElementRemoveChild(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isObject()) return JSValue.undefined_val;
+
+    const target_obj = args[0].toObject().?;
+    try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+
+    const children_atom = try vm.atom_table.intern("_children");
+    const children_arr = (inst.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
+    if (children_arr) |c_arr| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, c_arr, &items);
+
+        var new_items: std.ArrayList(JSValue) = .empty;
+        defer new_items.deinit(vm.allocator);
+
+        for (items.items) |item| {
+            if (item.toObject() != target_obj) {
+                try new_items.append(vm.allocator, item);
+            }
+        }
+
+        const new_arr = try createArray(vm, new_items.items);
+        try inst.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
+    }
+
+    return args[0];
+}
+
+fn nativeClassListAdd(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isString()) return JSValue.undefined_val;
+
+    const token = vm.atom_table.get(args[0].toStringAtom());
+    const tokens_atom = try vm.atom_table.intern("_tokens");
+    var list: std.ArrayList(JSValue) = .empty;
+    defer list.deinit(vm.allocator);
+
+    if (inst.getProperty(tokens_atom)) |val| {
+        if (val.toObject()) |arr| {
+            try getArrayElements(vm, arr, &list);
+        }
+    }
+
+    for (list.items) |item| {
+        if (item.isString() and std.mem.eql(u8, vm.atom_table.get(item.toStringAtom()), token)) {
+            return JSValue.undefined_val;
+        }
+    }
+
+    try list.append(vm.allocator, args[0]);
+    const new_arr = try createArray(vm, list.items);
+    try inst.setProperty(vm.allocator, tokens_atom, JSValue.fromObject(new_arr));
+    return JSValue.undefined_val;
+}
+
+fn nativeClassListContains(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.false_val;
+    if (args.len == 0 or !args[0].isString()) return JSValue.false_val;
+
+    const token = vm.atom_table.get(args[0].toStringAtom());
+    const tokens_atom = try vm.atom_table.intern("_tokens");
+    if (inst.getProperty(tokens_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+
+            for (list.items) |item| {
+                if (item.isString() and std.mem.eql(u8, vm.atom_table.get(item.toStringAtom()), token)) {
+                    return JSValue.true_val;
+                }
+            }
+        }
+    }
+    return JSValue.false_val;
+}
+
+fn nativeClassListRemove(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isString()) return JSValue.undefined_val;
+
+    const token = vm.atom_table.get(args[0].toStringAtom());
+    const tokens_atom = try vm.atom_table.intern("_tokens");
+    if (inst.getProperty(tokens_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+
+            var new_list: std.ArrayList(JSValue) = .empty;
+            defer new_list.deinit(vm.allocator);
+
+            for (list.items) |item| {
+                if (!item.isString() or !std.mem.eql(u8, vm.atom_table.get(item.toStringAtom()), token)) {
+                    try new_list.append(vm.allocator, item);
+                }
+            }
+
+            const new_arr = try createArray(vm, new_list.items);
+            try inst.setProperty(vm.allocator, tokens_atom, JSValue.fromObject(new_arr));
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeClassListToggle(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const has = try nativeClassListContains(ctx, this_val, args);
+    if (has.toBoolean()) {
+        _ = try nativeClassListRemove(ctx, this_val, args);
+        return JSValue.false_val;
+    } else {
+        _ = try nativeClassListAdd(ctx, this_val, args);
+        return JSValue.true_val;
+    }
+}
+
+fn nativeDocumentCreateElement(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+
+    const tag_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => "div",
+    };
+
+    const elem = try createJsElement(vm, tag_str);
+    return JSValue.fromObject(elem);
+}
+
+fn nativeDocumentGetElementById(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.null_val;
+
+    const target_id = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.null_val,
+    };
+
+    const doc_obj = this_val.toObject() orelse return JSValue.null_val;
+    const body_val = doc_obj.getProperty(try vm.atom_table.intern("body")) orelse return JSValue.null_val;
+    const body_obj = body_val.toObject() orelse return JSValue.null_val;
+
+    return findElementByIdRecursive(vm, body_obj, target_id);
+}
+
+fn findElementByIdRecursive(vm: *VM, elem: *JSObject, target_id: []const u8) anyerror!JSValue {
+    if (elem.getProperty(try vm.atom_table.intern("id"))) |id_val| {
+        if (id_val.isString()) {
+            if (std.mem.eql(u8, vm.atom_table.get(id_val.toStringAtom()), target_id)) {
+                return JSValue.fromObject(elem);
+            }
+        }
+    }
+
+    const children_atom = try vm.atom_table.intern("_children");
+    if (elem.getProperty(children_atom)) |c_val| {
+        if (c_val.toObject()) |c_arr| {
+            var items: std.ArrayList(JSValue) = .empty;
+            defer items.deinit(vm.allocator);
+            try getArrayElements(vm, c_arr, &items);
+
+            for (items.items) |item| {
+                if (item.toObject()) |child| {
+                    const found = try findElementByIdRecursive(vm, child, target_id);
+                    if (!found.isNull()) return found;
+                }
+            }
+        }
+    }
+
+    return JSValue.null_val;
+}
+
 test "builtins installation and execution" {
     const allocator = std.testing.allocator;
     const atom_table = try AtomTable.init(allocator);
@@ -1918,4 +2226,25 @@ test "abortcontroller formdata and websocket in javascript engine" {
     const res_ws = try vm.execute(&code_ws);
     try std.testing.expect(res_ws.isInt32());
     try std.testing.expectEqual(@as(i32, 1), res_ws.toInt32()); // OPEN
+
+    // 4. document.createElement, appendChild, classList, and getElementById
+    const script_dom =
+        \\let card = document.createElement("div");
+        \\card.setAttribute("id", "main-card");
+        \\card.classList.add("widget");
+        \\document.body.appendChild(card);
+        \\let found = document.getElementById("main-card");
+        \\return found.classList.contains("widget");
+    ;
+    var p_dom = Parser.init(allocator, script_dom);
+    const ast_dom = try p_dom.parseProgram();
+    defer ast_dom.deinit(allocator);
+
+    var c_dom = BytecodeCompiler.init(allocator, atom_table, "test_dom");
+    var code_dom = try c_dom.compile(ast_dom);
+    defer code_dom.deinit();
+
+    const res_dom = try vm.execute(&code_dom);
+    try std.testing.expect(res_dom.isBoolean());
+    try std.testing.expect(res_dom.toBoolean());
 }
