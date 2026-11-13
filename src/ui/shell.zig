@@ -28,6 +28,8 @@ const VimController = @import("vim.zig").VimController;
 const VimAction = @import("vim.zig").VimAction;
 const detectLoginForm = @import("../components/bitwarden/autofill.zig").detectLoginForm;
 const autofillForm = @import("../components/bitwarden/autofill.zig").autofillForm;
+const DownloadManager = @import("../net/downloads.zig").DownloadManager;
+const DownloadsPanel = @import("downloads_panel.zig").DownloadsPanel;
 
 pub const BrowserShell = struct {
     allocator: std.mem.Allocator,
@@ -46,6 +48,8 @@ pub const BrowserShell = struct {
     vim_controller: VimController,
     current_doc: ?*Node = null,
     current_layout: ?*LayoutBox = null,
+    download_manager: DownloadManager,
+    downloads_panel: DownloadsPanel,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) !*BrowserShell {
         const shell = try allocator.create(BrowserShell);
@@ -58,6 +62,8 @@ pub const BrowserShell = struct {
         const jit = try allocator.create(JITCompiler);
         jit.* = JITCompiler.init(allocator);
         vm.jit = jit;
+
+        const dl_mgr = try DownloadManager.init(allocator, null);
 
         shell.* = .{
             .allocator = allocator,
@@ -76,8 +82,11 @@ pub const BrowserShell = struct {
             .vim_controller = VimController.init(allocator),
             .current_doc = null,
             .current_layout = null,
+            .download_manager = dl_mgr,
+            .downloads_panel = undefined,
         };
         shell.compositor = Compositor.init(shell.rasterizer.backend());
+        shell.downloads_panel = DownloadsPanel.init(allocator, &shell.download_manager);
 
         // Open initial home tab
         _ = try shell.tab_manager.newTab("about:home", "Davoth Home", .Default);
@@ -85,6 +94,7 @@ pub const BrowserShell = struct {
     }
 
     pub fn deinit(self: *BrowserShell) void {
+        self.download_manager.deinit();
         if (self.current_layout) |l| l.deinit(self.allocator);
         if (self.current_doc) |d| d.deinit(self.allocator);
         self.vim_controller.deinit();
@@ -180,6 +190,9 @@ pub const BrowserShell = struct {
                 \\  </body>
                 \\</html>
             ;
+        } else if (std.mem.startsWith(u8, effective_url, "about:downloads")) {
+            html = try self.downloads_panel.renderAboutDownloadsHtml();
+            need_free_html = true;
         } else if (std.mem.startsWith(u8, effective_url, "file://")) {
             const path = effective_url[7..];
             html = try fs.readFileAlloc(self.allocator, path, 10 * 1024 * 1024);

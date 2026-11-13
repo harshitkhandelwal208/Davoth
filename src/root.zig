@@ -90,6 +90,7 @@ pub const net = struct {
     pub const cache = @import("net/cache.zig");
     pub const websocket = @import("net/websocket.zig");
     pub const download = @import("net/download.zig");
+    pub const downloads = @import("net/downloads.zig");
 };
 
 pub const webapis = struct {
@@ -150,6 +151,7 @@ pub const ui = struct {
     pub const sync = @import("ui/sync.zig");
     pub const shell = @import("ui/shell.zig");
     pub const gtk_app = @import("ui/gtk_app.zig");
+    pub const downloads_panel = @import("ui/downloads_panel.zig");
 };
 
 pub const extensions = struct {
