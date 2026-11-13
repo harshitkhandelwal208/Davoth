@@ -231,8 +231,8 @@ pub const BytecodeCompiler = struct {
                 }
             },
             .Assignment => |a| {
-                try self.compileNode(a.value);
                 if (a.target.data == .Identifier) {
+                    try self.compileNode(a.value);
                     const name = a.target.data.Identifier;
                     if (self.code.resolveLocal(name)) |slot| {
                         try self.code.emitOp(.Dup);
@@ -244,6 +244,13 @@ pub const BytecodeCompiler = struct {
                         try self.code.emitOp(.StoreGlobal);
                         try self.code.emitU16(@truncate(atom.toU32()));
                     }
+                } else if (a.target.data == .Member) {
+                    const m = a.target.data.Member;
+                    try self.compileNode(m.object);
+                    try self.compileNode(a.value);
+                    const atom = try self.atom_table.intern(m.property);
+                    try self.code.emitOp(.SetProp);
+                    try self.code.emitU16(@truncate(atom.toU32()));
                 }
             },
             .Call => |c| {

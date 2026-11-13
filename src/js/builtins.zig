@@ -296,6 +296,8 @@ pub fn initBuiltins(vm: *VM) !void {
     try hist_obj.setProperty(alloc, try table.intern("back"), JSValue.fromObject(hist_back_fn));
     const hist_fwd_fn = try vm.gc.allocateFunction(null, nativeHistoryForward, @ptrCast(vm));
     try hist_obj.setProperty(alloc, try table.intern("forward"), JSValue.fromObject(hist_fwd_fn));
+    const hist_go_fn = try vm.gc.allocateFunction(null, nativeHistoryGo, @ptrCast(vm));
+    try hist_obj.setProperty(alloc, try table.intern("go"), JSValue.fromObject(hist_go_fn));
     try global.setProperty(alloc, try table.intern("history"), JSValue.fromObject(hist_obj));
 
     // performance Web API
@@ -329,6 +331,10 @@ pub fn initBuiltins(vm: *VM) !void {
     try global.setProperty(alloc, try table.intern("KeyboardEvent"), JSValue.fromObject(kb_ev_ctor));
     const focus_ev_ctor = try vm.gc.allocateFunction(null, nativeFocusEventConstructor, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("FocusEvent"), JSValue.fromObject(focus_ev_ctor));
+    const popstate_ctor = try vm.gc.allocateFunction(null, nativePopStateEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("PopStateEvent"), JSValue.fromObject(popstate_ctor));
+    const hashchange_ctor = try vm.gc.allocateFunction(null, nativeHashChangeEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("HashChangeEvent"), JSValue.fromObject(hashchange_ctor));
 
     // Headers, Request, Response constructors
     const headers_ctor = try vm.gc.allocateFunction(null, nativeHeadersConstructor, @ptrCast(vm));
@@ -1846,9 +1852,21 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("id"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("className"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("parentElement"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("firstChild"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("lastChild"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("firstElementChild"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("lastElementChild"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("previousSibling"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nextSibling"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("previousElementSibling"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nextElementSibling"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("childElementCount"), JSValue.fromInt32(0));
 
     const children_arr = try createArray(vm, &[_]JSValue{});
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("_children"), JSValue.fromObject(children_arr));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("children"), JSValue.fromObject(children_arr));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("childNodes"), JSValue.fromObject(children_arr));
 
     const style_obj = try vm.gc.allocateObject(null);
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("style"), JSValue.fromObject(style_obj));
@@ -2030,6 +2048,77 @@ fn nativeElementSetAttribute(ctx: *anyopaque, this_val: JSValue, args: []const J
     return JSValue.undefined_val;
 }
 
+fn updateElementTreeRelationships(vm: *VM, parent: *JSObject) !void {
+    const children_atom = try vm.atom_table.intern("_children");
+    const c_arr_val = parent.getProperty(children_atom) orelse return;
+    const c_arr = c_arr_val.toObject() orelse return;
+
+    var items: std.ArrayList(JSValue) = .empty;
+    defer items.deinit(vm.allocator);
+    try getArrayElements(vm, c_arr, &items);
+
+    try parent.setProperty(vm.allocator, try vm.atom_table.intern("childNodes"), c_arr_val);
+
+    if (items.items.len > 0) {
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("firstChild"), items.items[0]);
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("lastChild"), items.items[items.items.len - 1]);
+    } else {
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("firstChild"), JSValue.null_val);
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("lastChild"), JSValue.null_val);
+    }
+
+    var elem_children: std.ArrayList(JSValue) = .empty;
+    defer elem_children.deinit(vm.allocator);
+
+    const nt_atom = try vm.atom_table.intern("nodeType");
+    for (items.items) |it| {
+        if (it.toObject()) |ch_obj| {
+            if (ch_obj.getProperty(nt_atom)) |nt| {
+                if (nt.toInt32() == 1) {
+                    try elem_children.append(vm.allocator, it);
+                }
+            }
+        }
+    }
+
+    const elem_children_arr = try createArray(vm, elem_children.items);
+    try parent.setProperty(vm.allocator, try vm.atom_table.intern("children"), JSValue.fromObject(elem_children_arr));
+    try parent.setProperty(vm.allocator, try vm.atom_table.intern("childElementCount"), JSValue.fromInt32(@intCast(elem_children.items.len)));
+
+    if (elem_children.items.len > 0) {
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("firstElementChild"), elem_children.items[0]);
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("lastElementChild"), elem_children.items[elem_children.items.len - 1]);
+    } else {
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("firstElementChild"), JSValue.null_val);
+        try parent.setProperty(vm.allocator, try vm.atom_table.intern("lastElementChild"), JSValue.null_val);
+    }
+
+    for (items.items, 0..) |it, idx| {
+        if (it.toObject()) |ch_obj| {
+            const prev = if (idx > 0) items.items[idx - 1] else JSValue.null_val;
+            const next = if (idx + 1 < items.items.len) items.items[idx + 1] else JSValue.null_val;
+            try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("previousSibling"), prev);
+            try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("nextSibling"), next);
+
+            const p_nt = parent.getProperty(nt_atom) orelse JSValue.fromInt32(1);
+            if (p_nt.toInt32() == 1) {
+                try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentElement"), JSValue.fromObject(parent));
+            } else {
+                try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentElement"), JSValue.null_val);
+            }
+        }
+    }
+
+    for (elem_children.items, 0..) |it, idx| {
+        if (it.toObject()) |ch_obj| {
+            const prev_el = if (idx > 0) elem_children.items[idx - 1] else JSValue.null_val;
+            const next_el = if (idx + 1 < elem_children.items.len) elem_children.items[idx + 1] else JSValue.null_val;
+            try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("previousElementSibling"), prev_el);
+            try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("nextElementSibling"), next_el);
+        }
+    }
+}
+
 fn nativeElementAppendChild(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     const inst = this_val.toObject() orelse return JSValue.undefined_val;
@@ -2067,6 +2156,7 @@ fn nativeElementAppendChild(ctx: *anyopaque, this_val: JSValue, args: []const JS
 
         const new_arr = try createArray(vm, items.items);
         try inst.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
+        try updateElementTreeRelationships(vm, inst);
     }
 
     return args[0];
@@ -2079,6 +2169,11 @@ fn nativeElementRemoveChild(ctx: *anyopaque, this_val: JSValue, args: []const JS
 
     const target_obj = args[0].toObject().?;
     try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+    try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentElement"), JSValue.null_val);
+    try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("previousSibling"), JSValue.null_val);
+    try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("nextSibling"), JSValue.null_val);
+    try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("previousElementSibling"), JSValue.null_val);
+    try target_obj.setProperty(vm.allocator, try vm.atom_table.intern("nextElementSibling"), JSValue.null_val);
 
     const children_atom = try vm.atom_table.intern("_children");
     const children_arr = (inst.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
@@ -2098,6 +2193,7 @@ fn nativeElementRemoveChild(ctx: *anyopaque, this_val: JSValue, args: []const JS
 
         const new_arr = try createArray(vm, new_items.items);
         try inst.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
+        try updateElementTreeRelationships(vm, inst);
     }
 
     return args[0];
@@ -2572,6 +2668,7 @@ fn nativeElementInsertBefore(ctx: *anyopaque, this_val: JSValue, args: []const J
 
     const new_arr = try createArray(vm, list.items);
     try inst.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
+    try updateElementTreeRelationships(vm, inst);
     return new_child;
 }
 
@@ -3237,6 +3334,21 @@ pub fn createJsDocument(vm: *VM) anyerror!*JSObject {
     const doc_disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("dispatchEvent"), JSValue.fromObject(doc_disp_ev_fn));
 
+    // HTMLCollections and script reference
+    const empty_forms = try createArray(vm, &[_]JSValue{});
+    try doc_obj.setProperty(alloc, try table.intern("forms"), JSValue.fromObject(empty_forms));
+
+    const empty_links = try createArray(vm, &[_]JSValue{});
+    try doc_obj.setProperty(alloc, try table.intern("links"), JSValue.fromObject(empty_links));
+
+    const empty_images = try createArray(vm, &[_]JSValue{});
+    try doc_obj.setProperty(alloc, try table.intern("images"), JSValue.fromObject(empty_images));
+
+    const empty_scripts = try createArray(vm, &[_]JSValue{});
+    try doc_obj.setProperty(alloc, try table.intern("scripts"), JSValue.fromObject(empty_scripts));
+
+    try doc_obj.setProperty(alloc, try table.intern("currentScript"), JSValue.null_val);
+
     return doc_obj;
 }
 
@@ -3850,12 +3962,54 @@ fn nativeHistoryReplaceState(ctx: *anyopaque, this_val: JSValue, args: []const J
     return nativeHistoryPushState(ctx, this_val, args);
 }
 
-fn nativeHistoryBack(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+fn nativeHistoryBack(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const state_val = inst.getProperty(try vm.atom_table.intern("state")) orelse JSValue.null_val;
+    const ev = try vm.gc.allocateObject(null);
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("type"), JSValue.fromStringAtom(try vm.atom_table.intern("popstate")));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("state"), state_val);
+    _ = try nativeEventTargetDispatchEvent(ctx, JSValue.fromObject(vm.global_object), &[_]JSValue{JSValue.fromObject(ev)});
     return JSValue.undefined_val;
 }
 
-fn nativeHistoryForward(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
-    return JSValue.undefined_val;
+fn nativeHistoryForward(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    return nativeHistoryBack(ctx, this_val, &[_]JSValue{});
+}
+
+fn nativeHistoryGo(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    return nativeHistoryBack(ctx, this_val, &[_]JSValue{});
+}
+
+fn nativePopStateEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev_val = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev = ev_val.toObject().?;
+    var state_val = JSValue.null_val;
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("state"))) |st| {
+            state_val = st;
+        }
+    }
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("state"), state_val);
+    return ev_val;
+}
+
+fn nativeHashChangeEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev_val = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev = ev_val.toObject().?;
+    var old_url = JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    var new_url = JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("oldURL"))) |ou| old_url = ou;
+        if (init.getProperty(try vm.atom_table.intern("newURL"))) |nu| new_url = nu;
+    }
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("oldURL"), old_url);
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("newURL"), new_url);
+    return ev_val;
 }
 
 fn nativeHeadersConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
@@ -5083,4 +5237,106 @@ test "universal web standards: DOMParser XMLSerializer template customElements B
     const res5 = try vm.execute(&code5);
     try std.testing.expect(res5.isBoolean());
     try std.testing.expect(res5.toBoolean());
+}
+
+test "universal web standards: WHATWG Element Traversal collections and PopState" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. Element and Node Traversal: firstChild, lastChild, firstElementChild, lastElementChild, siblings, parentElement
+    const script_traversal =
+        \\let parent = document.createElement("div");
+        \\let t1 = document.createTextNode("Hello");
+        \\let c1 = document.createElement("span");
+        \\let c2 = document.createElement("b");
+        \\let t2 = document.createTextNode("World");
+        \\parent.appendChild(t1);
+        \\parent.appendChild(c1);
+        \\parent.appendChild(c2);
+        \\parent.appendChild(t2);
+        \\let totalNodes = (parent.childNodes.length === 4);
+        \\let totalElems = (parent.childElementCount === 2);
+        \\let isFirstNode = (parent.firstChild === t1);
+        \\let isLastNode = (parent.lastChild === t2);
+        \\let isFirstElem = (parent.firstElementChild === c1);
+        \\let isLastElem = (parent.lastElementChild === c2);
+        \\let nextSib = (c1.nextSibling === c2);
+        \\let nextElemSib = (c1.nextElementSibling === c2);
+        \\let parentElem = (c1.parentElement === parent);
+        \\return totalNodes && totalElems && isFirstNode && isLastNode && isFirstElem && isLastElem && nextSib && nextElemSib && parentElem;
+    ;
+    var p1 = Parser.init(allocator, script_traversal);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_traversal");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. Document collections: forms, links, images, scripts, currentScript
+    const script_collections =
+        \\let hasForms = (document.forms.length === 0);
+        \\let hasLinks = (document.links.length === 0);
+        \\let hasImages = (document.images.length === 0);
+        \\let hasScripts = (document.scripts.length === 0);
+        \\let isCurrScript = (document.currentScript === null);
+        \\return hasForms && hasLinks && hasImages && hasScripts && isCurrScript;
+    ;
+    var p2 = Parser.init(allocator, script_collections);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_collections");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isBoolean());
+    try std.testing.expect(res2.toBoolean());
+
+    // 3. History pushState, back dispatching PopState, and Event constructors
+    const script_history =
+        \\window.popReceived = false;
+        \\window.popStateVal = null;
+        \\function onPop(e) {
+        \\    window.popReceived = true;
+        \\    window.popStateVal = e.state;
+        \\}
+        \\window.addEventListener("popstate", onPop);
+        \\history.pushState({ page: 42 }, "", "/page42");
+        \\history.back();
+        \\let pse = new PopStateEvent("popstate", { state: { custom: true } });
+        \\let hce = new HashChangeEvent("hashchange", { oldURL: "http://test/#old", newURL: "http://test/#new" });
+        \\let isPse = (pse.state.custom === true);
+        \\let isHce = (hce.oldURL === "http://test/#old") && (hce.newURL === "http://test/#new");
+        \\let isHistState = (window.popStateVal.page === 42);
+        \\return window.popReceived && isHistState && isPse && isHce;
+    ;
+    var p3 = Parser.init(allocator, script_history);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_history");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
 }
