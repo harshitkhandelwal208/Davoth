@@ -156,6 +156,7 @@ pub const extensions = struct {
     pub const manifest = @import("extensions/manifest.zig");
     pub const xpi = @import("extensions/xpi.zig");
     pub const runtime = @import("extensions/runtime.zig");
+    pub const filter_list = @import("extensions/filter_list.zig");
     pub const apis = struct {
         pub const tabs_api = @import("extensions/apis/tabs_api.zig");
         pub const storage_api = @import("extensions/apis/storage_api.zig");

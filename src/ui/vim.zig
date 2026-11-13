@@ -90,6 +90,14 @@ pub const VimAction = union(VimActionType) {
     FocusElement: *const Node,
 };
 
+pub const CandidateInteractive = struct {
+    node: *const Node,
+    url: ?[]const u8,
+    is_input: bool,
+    is_button: bool,
+    bounds: Rect,
+};
+
 pub const VimController = struct {
     allocator: std.mem.Allocator,
     mode: VimMode = .Normal,
@@ -170,13 +178,7 @@ pub const VimController = struct {
         const onclick_atom = try atom_table.intern("onclick");
         const tabindex_atom = try atom_table.intern("tabindex");
 
-        var candidates: std.ArrayList(struct {
-            node: *const Node,
-            url: ?[]const u8,
-            is_input: bool,
-            is_button: bool,
-            bounds: Rect,
-        }) = .empty;
+        var candidates: std.ArrayList(CandidateInteractive) = .empty;
         defer candidates.deinit(self.allocator);
 
         try collectInteractiveNodes(
@@ -552,13 +554,7 @@ fn collectInteractiveNodes(
     allocator: std.mem.Allocator,
     node: *const Node,
     layout_root: ?*const LayoutBox,
-    candidates: *std.ArrayList(struct {
-        node: *const Node,
-        url: ?[]const u8,
-        is_input: bool,
-        is_button: bool,
-        bounds: Rect,
-    }),
+    candidates: *std.ArrayList(CandidateInteractive),
     a_atom: @import("../common/string.zig").AtomId,
     button_atom: @import("../common/string.zig").AtomId,
     input_atom: @import("../common/string.zig").AtomId,

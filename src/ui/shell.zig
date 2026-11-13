@@ -215,6 +215,9 @@ pub const BrowserShell = struct {
         // Inject content scripts
         self.extension_manager.injectContentScripts(effective_url, doc);
 
+        // Apply AdNauseam cosmetic filtering (element hiding)
+        _ = self.extension_manager.applyCosmeticFilters(effective_url, doc, self.atom_table) catch {};
+
         // Build layout tree
         const layout_root_opt = try buildLayoutTree(self.allocator, doc, self.style_engine, null);
         if (layout_root_opt) |layout_root| {
