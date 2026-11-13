@@ -5,6 +5,7 @@ const AtomTable = @import("../common/string.zig").AtomTable;
 const JSValue = @import("value.zig").JSValue;
 const JSObject = @import("object.zig").JSObject;
 const VM = @import("interpreter.zig").VM;
+const c = @import("../common/c.zig");
 
 var timer_counter: i32 = 1;
 
@@ -142,6 +143,58 @@ pub fn initBuiltins(vm: *VM) !void {
     try json_obj.setProperty(alloc, try table.intern("stringify"), JSValue.fromObject(json_stringify_fn));
 
     try global.setProperty(alloc, try table.intern("JSON"), JSValue.fromObject(json_obj));
+
+    // Object constructor & helpers: groupBy, keys, values, assign
+    const object_obj = try vm.gc.allocateObject(null);
+    const group_by_fn = try vm.gc.allocateFunction(null, nativeObjectGroupBy, @ptrCast(vm));
+    try object_obj.setProperty(alloc, try table.intern("groupBy"), JSValue.fromObject(group_by_fn));
+
+    const keys_fn = try vm.gc.allocateFunction(null, nativeObjectKeys, @ptrCast(vm));
+    try object_obj.setProperty(alloc, try table.intern("keys"), JSValue.fromObject(keys_fn));
+
+    const values_fn = try vm.gc.allocateFunction(null, nativeObjectValues, @ptrCast(vm));
+    try object_obj.setProperty(alloc, try table.intern("values"), JSValue.fromObject(values_fn));
+
+    const assign_fn = try vm.gc.allocateFunction(null, nativeObjectAssign, @ptrCast(vm));
+    try object_obj.setProperty(alloc, try table.intern("assign"), JSValue.fromObject(assign_fn));
+
+    try global.setProperty(alloc, try table.intern("Object"), JSValue.fromObject(object_obj));
+
+    // Promise.withResolvers (ES2024)
+    const with_resolvers_fn = try vm.gc.allocateFunction(null, nativePromiseWithResolvers, @ptrCast(vm));
+    try promise_obj.setProperty(alloc, try table.intern("withResolvers"), JSValue.fromObject(with_resolvers_fn));
+
+    // crypto: randomUUID, getRandomValues
+    const crypto_obj = try vm.gc.allocateObject(null);
+    const uuid_fn = try vm.gc.allocateFunction(null, nativeCryptoRandomUUID, @ptrCast(vm));
+    try crypto_obj.setProperty(alloc, try table.intern("randomUUID"), JSValue.fromObject(uuid_fn));
+
+    const rand_values_fn = try vm.gc.allocateFunction(null, nativeCryptoGetRandomValues, @ptrCast(vm));
+    try crypto_obj.setProperty(alloc, try table.intern("getRandomValues"), JSValue.fromObject(rand_values_fn));
+
+    try global.setProperty(alloc, try table.intern("crypto"), JSValue.fromObject(crypto_obj));
+
+    // Base64 encoding/decoding: btoa & atob
+    const btoa_fn = try vm.gc.allocateFunction(null, nativeBtoa, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("btoa"), JSValue.fromObject(btoa_fn));
+
+    const atob_fn = try vm.gc.allocateFunction(null, nativeAtob, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("atob"), JSValue.fromObject(atob_fn));
+
+    // structuredClone deep copy Web API
+    const clone_fn = try vm.gc.allocateFunction(null, nativeStructuredClone, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("structuredClone"), JSValue.fromObject(clone_fn));
+
+    // queueMicrotask Web API
+    const qm_fn = try vm.gc.allocateFunction(null, nativeQueueMicrotask, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("queueMicrotask"), JSValue.fromObject(qm_fn));
+
+    // TextEncoder & TextDecoder Web APIs
+    const text_encoder_fn = try vm.gc.allocateFunction(null, nativeTextEncoderConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("TextEncoder"), JSValue.fromObject(text_encoder_fn));
+
+    const text_decoder_fn = try vm.gc.allocateFunction(null, nativeTextDecoderConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("TextDecoder"), JSValue.fromObject(text_decoder_fn));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -508,6 +561,302 @@ fn nativeJsonStringify(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyer
     }
 }
 
+fn nativeObjectGroupBy(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len < 2) return JSValue.undefined_val;
+    const items_obj = args[0].toObject() orelse return JSValue.undefined_val;
+    const callback_obj = args[1].toObject() orelse return JSValue.undefined_val;
+    const cb_fn = callback_obj.native_fn orelse return JSValue.undefined_val;
+
+    var elements: std.ArrayList(JSValue) = .empty;
+    defer elements.deinit(vm.allocator);
+    try getArrayElements(vm, items_obj, &elements);
+
+    const out_groups = try vm.gc.allocateObject(null);
+
+    var map = std.StringHashMap(std.ArrayList(JSValue)).init(vm.allocator);
+    defer {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(vm.allocator);
+            vm.allocator.free(entry.key_ptr.*);
+        }
+        map.deinit();
+    }
+
+    for (elements.items, 0..) |elem, idx| {
+        const key_val = try cb_fn(callback_obj.native_ctx orelse @ptrCast(vm), JSValue.undefined_val, &[_]JSValue{
+            elem,
+            JSValue.fromInt32(@intCast(idx)),
+        });
+
+        var key_buf: [128]u8 = undefined;
+        const key_str = switch (key_val.getType()) {
+            .String => vm.atom_table.get(key_val.toStringAtom()),
+            .Int32 => std.fmt.bufPrint(&key_buf, "{d}", .{key_val.toInt32()}) catch "0",
+            else => "key",
+        };
+
+        const gop = try map.getOrPut(key_str);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try vm.allocator.dupe(u8, key_str);
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.append(vm.allocator, elem);
+    }
+
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        const group_arr = try createArray(vm, entry.value_ptr.items);
+        const atom = try vm.atom_table.intern(entry.key_ptr.*);
+        try out_groups.setProperty(vm.allocator, atom, JSValue.fromObject(group_arr));
+    }
+
+    return JSValue.fromObject(out_groups);
+}
+
+fn nativeObjectKeys(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+    const target = args[0].toObject() orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+
+    var entries: std.ArrayList(@import("object.zig").PropertyEntry) = .empty;
+    defer entries.deinit(vm.allocator);
+    try target.getPropertyEntries(vm.allocator, &entries);
+
+    var keys: std.ArrayList(JSValue) = .empty;
+    defer keys.deinit(vm.allocator);
+
+    for (entries.items) |prop| {
+        const str = vm.atom_table.get(prop.atom);
+        const key_atom = try vm.atom_table.intern(str);
+        try keys.append(vm.allocator, JSValue.fromStringAtom(key_atom));
+    }
+
+    const arr = try createArray(vm, keys.items);
+    return JSValue.fromObject(arr);
+}
+
+fn nativeObjectValues(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+    const target = args[0].toObject() orelse return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+
+    var entries: std.ArrayList(@import("object.zig").PropertyEntry) = .empty;
+    defer entries.deinit(vm.allocator);
+    try target.getPropertyEntries(vm.allocator, &entries);
+
+    var vals: std.ArrayList(JSValue) = .empty;
+    defer vals.deinit(vm.allocator);
+
+    for (entries.items) |prop| {
+        try vals.append(vm.allocator, prop.value);
+    }
+
+    const arr = try createArray(vm, vals.items);
+    return JSValue.fromObject(arr);
+}
+
+fn nativeObjectAssign(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+    const target = args[0].toObject() orelse return args[0];
+
+    for (args[1..]) |src_val| {
+        if (src_val.toObject()) |src_obj| {
+            var entries: std.ArrayList(@import("object.zig").PropertyEntry) = .empty;
+            defer entries.deinit(vm.allocator);
+            try src_obj.getPropertyEntries(vm.allocator, &entries);
+
+            for (entries.items) |prop| {
+                try target.setProperty(vm.allocator, prop.atom, prop.value);
+            }
+        }
+    }
+    return args[0];
+}
+
+fn nativePromiseWithResolvers(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const res_obj = try vm.gc.allocateObject(null);
+    const p_obj = try vm.gc.allocateObject(null);
+    p_obj.builtin_type = .Promise;
+
+    const res_fn = try vm.gc.allocateFunction(null, nativePromiseResolve, @ptrCast(vm));
+    const rej_fn = try vm.gc.allocateFunction(null, nativePromiseReject, @ptrCast(vm));
+
+    try res_obj.setProperty(vm.allocator, try vm.atom_table.intern("promise"), JSValue.fromObject(p_obj));
+    try res_obj.setProperty(vm.allocator, try vm.atom_table.intern("resolve"), JSValue.fromObject(res_fn));
+    try res_obj.setProperty(vm.allocator, try vm.atom_table.intern("reject"), JSValue.fromObject(rej_fn));
+
+    return JSValue.fromObject(res_obj);
+}
+
+fn nativeCryptoRandomUUID(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    var bytes: [16]u8 = undefined;
+    _ = c.RAND_bytes(&bytes, 16);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // RFC 4122 version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+
+    var buf: [36]u8 = undefined;
+    const uuid_str = try std.fmt.bufPrint(&buf, "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+    });
+    const atom = try vm.atom_table.intern(uuid_str);
+    return JSValue.fromStringAtom(atom);
+}
+
+fn nativeCryptoGetRandomValues(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+    const target = args[0].toObject() orelse return args[0];
+
+    var elements: std.ArrayList(JSValue) = .empty;
+    defer elements.deinit(vm.allocator);
+    try getArrayElements(vm, target, &elements);
+
+    for (0..elements.items.len) |i| {
+        var rand_byte: u8 = 0;
+        _ = c.RAND_bytes(@ptrCast(&rand_byte), 1);
+        var buf: [32]u8 = undefined;
+        const key_str = std.fmt.bufPrint(&buf, "{d}", .{i}) catch "0";
+        const key_atom = try vm.atom_table.intern(key_str);
+        try target.setProperty(vm.allocator, key_atom, JSValue.fromInt32(rand_byte));
+    }
+    return args[0];
+}
+
+fn nativeBtoa(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+    const input_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.undefined_val,
+    };
+    const enc = std.base64.standard.Encoder;
+    const out_len = enc.calcSize(input_str.len);
+    const out_buf = try vm.allocator.alloc(u8, out_len);
+    defer vm.allocator.free(out_buf);
+    _ = enc.encode(out_buf, input_str);
+    const atom = try vm.atom_table.intern(out_buf);
+    return JSValue.fromStringAtom(atom);
+}
+
+fn nativeAtob(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+    const input_str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => return JSValue.undefined_val,
+    };
+    const dec = std.base64.standard.Decoder;
+    const out_len = dec.calcSizeForSlice(input_str) catch return error.InvalidCharacter;
+    const out_buf = try vm.allocator.alloc(u8, out_len);
+    defer vm.allocator.free(out_buf);
+    try dec.decode(out_buf, input_str);
+    const atom = try vm.atom_table.intern(out_buf);
+    return JSValue.fromStringAtom(atom);
+}
+
+pub fn cloneValue(vm: *VM, val: JSValue) anyerror!JSValue {
+    if (!val.isObject()) return val;
+    const obj = val.toObject().?;
+    if (obj.builtin_type == .Array) {
+        var elements: std.ArrayList(JSValue) = .empty;
+        defer elements.deinit(vm.allocator);
+        try getArrayElements(vm, obj, &elements);
+        var cloned_items: std.ArrayList(JSValue) = .empty;
+        defer cloned_items.deinit(vm.allocator);
+        for (elements.items) |item| {
+            try cloned_items.append(vm.allocator, try cloneValue(vm, item));
+        }
+        const cloned_arr = try createArray(vm, cloned_items.items);
+        return JSValue.fromObject(cloned_arr);
+    }
+
+    const cloned_obj = try vm.gc.allocateObject(obj.prototype);
+    var entries: std.ArrayList(@import("object.zig").PropertyEntry) = .empty;
+    defer entries.deinit(vm.allocator);
+    try obj.getPropertyEntries(vm.allocator, &entries);
+
+    for (entries.items) |prop| {
+        const cloned_prop = try cloneValue(vm, prop.value);
+        try cloned_obj.setProperty(vm.allocator, prop.atom, cloned_prop);
+    }
+    return JSValue.fromObject(cloned_obj);
+}
+
+fn nativeStructuredClone(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.undefined_val;
+    return try cloneValue(vm, args[0]);
+}
+
+fn nativeQueueMicrotask(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    if (args.len > 0 and args[0].isObject()) {
+        const obj = args[0].toObject().?;
+        if (obj.native_fn) |fn_ptr| {
+            _ = try fn_ptr(obj.native_ctx orelse undefined, JSValue.undefined_val, &[_]JSValue{});
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeTextEncoderEncode(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.fromObject(try createArray(vm, &[_]JSValue{}));
+    const str = switch (args[0].getType()) {
+        .String => vm.atom_table.get(args[0].toStringAtom()),
+        else => "",
+    };
+    var byte_values: std.ArrayList(JSValue) = .empty;
+    defer byte_values.deinit(vm.allocator);
+    for (str) |b| {
+        try byte_values.append(vm.allocator, JSValue.fromInt32(b));
+    }
+    const arr = try createArray(vm, byte_values.items);
+    return JSValue.fromObject(arr);
+}
+
+fn nativeTextEncoderConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    const enc_fn = try vm.gc.allocateFunction(null, nativeTextEncoderEncode, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("encode"), JSValue.fromObject(enc_fn));
+    return JSValue.fromObject(inst);
+}
+
+fn nativeTextDecoderDecode(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    const target = args[0].toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+
+    var elements: std.ArrayList(JSValue) = .empty;
+    defer elements.deinit(vm.allocator);
+    try getArrayElements(vm, target, &elements);
+
+    const buf = try vm.allocator.alloc(u8, elements.items.len);
+    defer vm.allocator.free(buf);
+    for (elements.items, 0..) |item, i| {
+        buf[i] = @intCast(@max(0, @min(255, item.toInt32())));
+    }
+    const atom = try vm.atom_table.intern(buf);
+    return JSValue.fromStringAtom(atom);
+}
+
+fn nativeTextDecoderConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    const dec_fn = try vm.gc.allocateFunction(null, nativeTextDecoderDecode, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("decode"), JSValue.fromObject(dec_fn));
+    return JSValue.fromObject(inst);
+}
+
 test "builtins installation and execution" {
     const allocator = std.testing.allocator;
     const atom_table = try AtomTable.init(allocator);
@@ -624,4 +973,120 @@ test "es2024 array helpers and promise combinators" {
         JSValue.fromStringAtom(try atom_table.intern("42")),
     });
     try std.testing.expectEqual(@as(f64, 42.0), parsed.toFloat64());
+}
+
+test "modern web and es2024 builtins: btoa atob crypto structuredClone object groupby textencoder" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    // 1. btoa and atob Base64 roundtrip
+    const orig_str = "Davoth Browser Engine";
+    const btoa_val = try nativeBtoa(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern(orig_str)),
+    });
+    try std.testing.expect(btoa_val.isString());
+    const btoa_str = atom_table.get(btoa_val.toStringAtom());
+
+    const atob_val = try nativeAtob(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{btoa_val});
+    try std.testing.expect(atob_val.isString());
+    const atob_str = atom_table.get(atob_val.toStringAtom());
+    try std.testing.expectEqualStrings(orig_str, atob_str);
+    _ = btoa_str;
+
+    // 2. crypto.randomUUID
+    const uuid_val = try nativeCryptoRandomUUID(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{});
+    try std.testing.expect(uuid_val.isString());
+    const uuid_str = atom_table.get(uuid_val.toStringAtom());
+    try std.testing.expectEqual(@as(usize, 36), uuid_str.len);
+    try std.testing.expectEqual(@as(u8, '-'), uuid_str[8]);
+    try std.testing.expectEqual(@as(u8, '-'), uuid_str[13]);
+    try std.testing.expectEqual(@as(u8, '4'), uuid_str[14]); // RFC 4122 v4
+    try std.testing.expectEqual(@as(u8, '-'), uuid_str[18]);
+    try std.testing.expectEqual(@as(u8, '-'), uuid_str[23]);
+
+    // 3. Promise.withResolvers
+    const resolvers_val = try nativePromiseWithResolvers(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{});
+    try std.testing.expect(resolvers_val.isObject());
+    const res_obj = resolvers_val.toObject().?;
+    try std.testing.expect(res_obj.getProperty(try atom_table.intern("promise")) != null);
+    try std.testing.expect(res_obj.getProperty(try atom_table.intern("resolve")) != null);
+    try std.testing.expect(res_obj.getProperty(try atom_table.intern("reject")) != null);
+
+    // 4. Object.keys, values, and assign
+    const test_obj = try vm.gc.allocateObject(null);
+    try test_obj.setProperty(allocator, try atom_table.intern("a"), JSValue.fromInt32(1));
+    try test_obj.setProperty(allocator, try atom_table.intern("b"), JSValue.fromInt32(2));
+
+    const keys_val = try nativeObjectKeys(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{JSValue.fromObject(test_obj)});
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(allocator);
+    try getArrayElements(vm, keys_val.toObject().?, &keys_list);
+    try std.testing.expectEqual(@as(usize, 2), keys_list.items.len);
+
+    const values_val = try nativeObjectValues(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{JSValue.fromObject(test_obj)});
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(allocator);
+    try getArrayElements(vm, values_val.toObject().?, &vals_list);
+    try std.testing.expectEqual(@as(usize, 2), vals_list.items.len);
+
+    // 5. structuredClone
+    const cloned_val = try nativeStructuredClone(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{JSValue.fromObject(test_obj)});
+    try std.testing.expect(cloned_val.isObject());
+    const cloned_obj = cloned_val.toObject().?;
+    try std.testing.expect(cloned_obj != test_obj);
+    const prop_a = cloned_obj.getProperty(try atom_table.intern("a")).?;
+    try std.testing.expectEqual(@as(i32, 1), prop_a.toInt32());
+
+    // 6. TextEncoder and TextDecoder roundtrip
+    const enc_val = try nativeTextEncoderEncode(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(try atom_table.intern("WebStandards")),
+    });
+    try std.testing.expect(enc_val.isObject());
+
+    const dec_val = try nativeTextDecoderDecode(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{enc_val});
+    try std.testing.expect(dec_val.isString());
+    try std.testing.expectEqualStrings("WebStandards", atom_table.get(dec_val.toStringAtom()));
+
+    // 7. Object.groupBy (ES2024)
+    const items_for_group = [_]JSValue{
+        JSValue.fromInt32(1),
+        JSValue.fromInt32(2),
+        JSValue.fromInt32(3),
+        JSValue.fromInt32(4),
+    };
+    const arr_to_group = try createArray(vm, &items_for_group);
+
+    const even_atom = try atom_table.intern("even");
+    const odd_atom = try atom_table.intern("odd");
+
+    const GroupCallback = struct {
+        fn cb(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+            const table: *AtomTable = @ptrCast(@alignCast(ctx));
+            const num = args[0].toInt32();
+            if (@mod(num, 2) == 0) {
+                return JSValue.fromStringAtom(try table.intern("even"));
+            } else {
+                return JSValue.fromStringAtom(try table.intern("odd"));
+            }
+        }
+    };
+
+    const cb_fn_obj = try vm.gc.allocateFunction(null, GroupCallback.cb, @ptrCast(atom_table));
+    const grouped_val = try nativeObjectGroupBy(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromObject(arr_to_group),
+        JSValue.fromObject(cb_fn_obj),
+    });
+    try std.testing.expect(grouped_val.isObject());
+    const g_obj = grouped_val.toObject().?;
+    try std.testing.expect(g_obj.getProperty(even_atom) != null);
+    try std.testing.expect(g_obj.getProperty(odd_atom) != null);
 }

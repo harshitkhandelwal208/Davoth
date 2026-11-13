@@ -153,30 +153,87 @@ pub const StyleEngine = struct {
             if (std.mem.eql(u8, val, "absolute")) style.position = .Absolute;
             if (std.mem.eql(u8, val, "fixed")) style.position = .Fixed;
             if (std.mem.eql(u8, val, "sticky")) style.position = .Sticky;
+        } else if (std.mem.eql(u8, name, "box-sizing")) {
+            if (std.mem.eql(u8, val, "border-box")) style.box_sizing = .BorderBox;
+            if (std.mem.eql(u8, val, "content-box")) style.box_sizing = .ContentBox;
         } else if (std.mem.eql(u8, name, "background-color") or std.mem.eql(u8, name, "background")) {
-            if (Color.parseHex(val)) |col| {
+            if (Color.parse(val)) |col| {
                 style.background_color = col;
             }
         } else if (std.mem.eql(u8, name, "color")) {
-            if (Color.parseHex(val)) |col| {
+            if (Color.parse(val)) |col| {
                 style.color = col;
+            }
+        } else if (std.mem.eql(u8, name, "border-color")) {
+            if (Color.parse(val)) |col| {
+                style.border_color = col;
+            }
+        } else if (std.mem.eql(u8, name, "border-width") or std.mem.eql(u8, name, "border")) {
+            const u = parseUnit(val);
+            style.border_widths = @import("../common/types.zig").BoxEdges.initAll(u.value);
+            // If shorthand contains a color token
+            if (Color.parse(val)) |col| {
+                style.border_color = col;
             }
         } else if (std.mem.eql(u8, name, "width")) {
             style.width = parseUnit(val);
         } else if (std.mem.eql(u8, name, "height")) {
             style.height = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "min-width")) {
+            style.min_width = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "max-width")) {
+            style.max_width = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "min-height")) {
+            style.min_height = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "max-height")) {
+            style.max_height = parseUnit(val);
         } else if (std.mem.eql(u8, name, "margin")) {
             const u = parseUnit(val);
             style.margin = .{ .top = u, .right = u, .bottom = u, .left = u };
         } else if (std.mem.eql(u8, name, "padding")) {
             const u = parseUnit(val);
             style.padding = .{ .top = u, .right = u, .bottom = u, .left = u };
+        } else if (std.mem.eql(u8, name, "top")) {
+            style.top = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "right")) {
+            style.right = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "bottom")) {
+            style.bottom = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "left")) {
+            style.left = parseUnit(val);
         } else if (std.mem.eql(u8, name, "flex-direction")) {
             if (std.mem.eql(u8, val, "row")) style.flex_direction = .Row;
+            if (std.mem.eql(u8, val, "row-reverse")) style.flex_direction = .RowReverse;
             if (std.mem.eql(u8, val, "column")) style.flex_direction = .Column;
+            if (std.mem.eql(u8, val, "column-reverse")) style.flex_direction = .ColumnReverse;
         } else if (std.mem.eql(u8, name, "justify-content")) {
+            if (std.mem.eql(u8, val, "flex-start")) style.justify_content = .FlexStart;
+            if (std.mem.eql(u8, val, "flex-end")) style.justify_content = .FlexEnd;
             if (std.mem.eql(u8, val, "center")) style.justify_content = .Center;
             if (std.mem.eql(u8, val, "space-between")) style.justify_content = .SpaceBetween;
+            if (std.mem.eql(u8, val, "space-around")) style.justify_content = .SpaceAround;
+            if (std.mem.eql(u8, val, "space-evenly")) style.justify_content = .SpaceEvenly;
+        } else if (std.mem.eql(u8, name, "align-items")) {
+            if (std.mem.eql(u8, val, "stretch")) style.align_items = .Stretch;
+            if (std.mem.eql(u8, val, "flex-start")) style.align_items = .FlexStart;
+            if (std.mem.eql(u8, val, "flex-end")) style.align_items = .FlexEnd;
+            if (std.mem.eql(u8, val, "center")) style.align_items = .Center;
+            if (std.mem.eql(u8, val, "baseline")) style.align_items = .Baseline;
+        } else if (std.mem.eql(u8, name, "flex-grow")) {
+            style.flex_grow = std.fmt.parseFloat(f32, val) catch 0.0;
+        } else if (std.mem.eql(u8, name, "flex-shrink")) {
+            style.flex_shrink = std.fmt.parseFloat(f32, val) catch 1.0;
+        } else if (std.mem.eql(u8, name, "flex-basis")) {
+            style.flex_basis = parseUnit(val);
+        } else if (std.mem.eql(u8, name, "opacity")) {
+            const op = std.fmt.parseFloat(f32, val) catch 1.0;
+            style.opacity = @max(0.0, @min(1.0, op));
+        } else if (std.mem.eql(u8, name, "z-index")) {
+            style.z_index = std.fmt.parseInt(i32, val, 10) catch 0;
+        } else if (std.mem.eql(u8, name, "font-size")) {
+            style.font_size = parseUnit(val).value;
+        } else if (std.mem.eql(u8, name, "line-height")) {
+            style.line_height = std.fmt.parseFloat(f32, val) catch 1.2;
         }
     }
 

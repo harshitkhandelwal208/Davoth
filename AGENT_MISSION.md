@@ -8,7 +8,13 @@ Davoth does **NOT** embed or wrap Gecko, Blink, WebKit, or Servo. It does **NOT*
 
 ## Prime Directives & Objectives
 
-### 1. Drop-In Replacement for Modern Browsers (Firefox Parity)
+### CRITICAL PRINCIPLE: UNIVERSAL WEB ENGINE (NOT "FIREFOX BUT LIGHTER" OR BENCHMARK-TUNED)
+- **Do NOT build Davoth as merely "Firefox but lighter" or an engine overfitted to pass specific synthetic benchmarks (e.g. Acid3 or Speedometer alone).**
+- Davoth must be a **true, independent, universal web browser** engineered from first principles against official standards (WHATWG HTML/DOM, W3C CSS, ECMA-262).
+- It must parse, lay out, and execute **any arbitrary modern real-world website** (complex React/Vue/Svelte/Next.js SPAs, dynamic DOM mutations, web applications, media streaming, WebSockets, Canvas, WASM) robustly and flawlessly.
+- Architectural memory efficiency (~19MB base USS) must be achieved through sound systems design (slab allocators, arena lifetimes, zero-copy parsers, LRU tile caching, and kernel page deflation), never by taking shortcuts, dropping capabilities, or compromising correctness.
+
+### 1. Drop-In Replacement for Modern Browsers (Full Web Capabilities)
 - Achieve full feature parity with modern browsers (refer to `docs/FEATURE_PARITY_CHECKLIST.md`).
 - Subsystems to continuously harden, optimize, and expand:
   - **HTML5 Parser**: WHATWG streaming tokenizer, insertion mode state machine, DOM tree builder.

@@ -171,6 +171,26 @@ pub const JSObject = struct {
     pub fn hasProperty(self: *JSObject, atom: AtomId) bool {
         return self.getProperty(atom) != null;
     }
+
+    pub fn getPropertyEntries(self: *JSObject, allocator: std.mem.Allocator, out: *std.ArrayList(PropertyEntry)) !void {
+        var curr: ?*const Shape = self.shape;
+        while (curr) |s| {
+            if (s.property) |prop| {
+                if (prop.slot_index < self.slots.items.len) {
+                    try out.append(allocator, .{
+                        .atom = prop.atom,
+                        .value = self.slots.items[prop.slot_index],
+                    });
+                }
+            }
+            curr = s.parent;
+        }
+    }
+};
+
+pub const PropertyEntry = struct {
+    atom: AtomId,
+    value: JSValue,
 };
 
 test "hidden classes and property resolution" {

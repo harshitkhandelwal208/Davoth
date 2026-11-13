@@ -171,6 +171,73 @@ pub const Color = struct {
         }
         return null;
     }
+
+    pub fn parse(str: []const u8) ?Color {
+        const trimmed = std.mem.trim(u8, str, " \t\r\n");
+        if (trimmed.len == 0) return null;
+        if (trimmed[0] == '#') return parseHex(trimmed);
+
+        // Named CSS colors
+        if (std.ascii.eqlIgnoreCase(trimmed, "transparent")) return Color.transparent;
+        if (std.ascii.eqlIgnoreCase(trimmed, "black")) return Color.black;
+        if (std.ascii.eqlIgnoreCase(trimmed, "white")) return Color.white;
+        if (std.ascii.eqlIgnoreCase(trimmed, "red")) return Color.red;
+        if (std.ascii.eqlIgnoreCase(trimmed, "green")) return Color.green;
+        if (std.ascii.eqlIgnoreCase(trimmed, "blue")) return Color.blue;
+        if (std.ascii.eqlIgnoreCase(trimmed, "gray") or std.ascii.eqlIgnoreCase(trimmed, "grey")) return Color.initRgb(128, 128, 128);
+        if (std.ascii.eqlIgnoreCase(trimmed, "lightgray") or std.ascii.eqlIgnoreCase(trimmed, "lightgrey")) return Color.initRgb(211, 211, 211);
+        if (std.ascii.eqlIgnoreCase(trimmed, "darkgray") or std.ascii.eqlIgnoreCase(trimmed, "darkgrey")) return Color.initRgb(169, 169, 169);
+        if (std.ascii.eqlIgnoreCase(trimmed, "yellow")) return Color.initRgb(255, 255, 0);
+        if (std.ascii.eqlIgnoreCase(trimmed, "cyan") or std.ascii.eqlIgnoreCase(trimmed, "aqua")) return Color.initRgb(0, 255, 255);
+        if (std.ascii.eqlIgnoreCase(trimmed, "magenta") or std.ascii.eqlIgnoreCase(trimmed, "fuchsia")) return Color.initRgb(255, 0, 255);
+        if (std.ascii.eqlIgnoreCase(trimmed, "orange")) return Color.initRgb(255, 165, 0);
+        if (std.ascii.eqlIgnoreCase(trimmed, "purple")) return Color.initRgb(128, 0, 128);
+        if (std.ascii.eqlIgnoreCase(trimmed, "pink")) return Color.initRgb(255, 192, 203);
+        if (std.ascii.eqlIgnoreCase(trimmed, "brown")) return Color.initRgb(165, 42, 42);
+        if (std.ascii.eqlIgnoreCase(trimmed, "navy")) return Color.initRgb(0, 0, 128);
+        if (std.ascii.eqlIgnoreCase(trimmed, "teal")) return Color.initRgb(0, 128, 128);
+        if (std.ascii.eqlIgnoreCase(trimmed, "olive")) return Color.initRgb(128, 128, 0);
+        if (std.ascii.eqlIgnoreCase(trimmed, "maroon")) return Color.initRgb(128, 0, 0);
+        if (std.ascii.eqlIgnoreCase(trimmed, "silver")) return Color.initRgb(192, 192, 192);
+        if (std.ascii.eqlIgnoreCase(trimmed, "gold")) return Color.initRgb(255, 215, 0);
+
+        // rgb(...) and rgba(...)
+        if (std.mem.startsWith(u8, trimmed, "rgb(") and std.mem.endsWith(u8, trimmed, ")")) {
+            const inner = trimmed[4 .. trimmed.len - 1];
+            return parseRgbParams(inner, false);
+        }
+        if (std.mem.startsWith(u8, trimmed, "rgba(") and std.mem.endsWith(u8, trimmed, ")")) {
+            const inner = trimmed[5 .. trimmed.len - 1];
+            return parseRgbParams(inner, true);
+        }
+
+        return null;
+    }
+
+    fn parseRgbParams(inner: []const u8, has_alpha: bool) ?Color {
+        var it = std.mem.splitScalar(u8, inner, ',');
+        const r_str = std.mem.trim(u8, it.next() orelse return null, " \t\r\n");
+        const g_str = std.mem.trim(u8, it.next() orelse return null, " \t\r\n");
+        const b_str = std.mem.trim(u8, it.next() orelse return null, " \t\r\n");
+
+        const r = std.fmt.parseInt(u8, r_str, 10) catch return null;
+        const g = std.fmt.parseInt(u8, g_str, 10) catch return null;
+        const b = std.fmt.parseInt(u8, b_str, 10) catch return null;
+
+        var a: u8 = 255;
+        if (has_alpha) {
+            if (it.next()) |a_str| {
+                const a_trimmed = std.mem.trim(u8, a_str, " \t\r\n");
+                if (std.fmt.parseFloat(f32, a_trimmed)) |a_flt| {
+                    const clamped = @max(0.0, @min(1.0, a_flt));
+                    a = @intFromFloat(clamped * 255.0);
+                } else |_| {
+                    a = std.fmt.parseInt(u8, a_trimmed, 10) catch 255;
+                }
+            }
+        }
+        return Color{ .r = r, .g = g, .b = b, .a = a };
+    }
 };
 
 test "color parse hex and u32 roundtrip" {
@@ -186,6 +253,28 @@ test "color parse hex and u32 roundtrip" {
     try std.testing.expectEqual(c1.g, c2.g);
     try std.testing.expectEqual(c1.b, c2.b);
     try std.testing.expectEqual(c1.a, c2.a);
+
+    // CSS named colors
+    const red_col = Color.parse("red").?;
+    try std.testing.expectEqual(@as(u8, 255), red_col.r);
+    try std.testing.expectEqual(@as(u8, 0), red_col.g);
+    try std.testing.expectEqual(@as(u8, 0), red_col.b);
+
+    const blue_col = Color.parse("blue").?;
+    try std.testing.expectEqual(@as(u8, 255), blue_col.b);
+
+    // CSS rgb and rgba
+    const rgb_col = Color.parse("rgb(10, 20, 30)").?;
+    try std.testing.expectEqual(@as(u8, 10), rgb_col.r);
+    try std.testing.expectEqual(@as(u8, 20), rgb_col.g);
+    try std.testing.expectEqual(@as(u8, 30), rgb_col.b);
+    try std.testing.expectEqual(@as(u8, 255), rgb_col.a);
+
+    const rgba_col = Color.parse("rgba(100, 150, 200, 0.5)").?;
+    try std.testing.expectEqual(@as(u8, 100), rgba_col.r);
+    try std.testing.expectEqual(@as(u8, 150), rgba_col.g);
+    try std.testing.expectEqual(@as(u8, 200), rgba_col.b);
+    try std.testing.expectEqual(@as(u8, 127), rgba_col.a);
 }
 
 pub const ContainerId = enum(u8) {

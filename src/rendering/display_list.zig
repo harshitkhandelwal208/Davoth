@@ -49,35 +49,49 @@ pub const DisplayList = struct {
     }
 
     fn renderBox(self: *DisplayList, box: *const LayoutBox) !void {
+        const opacity_factor = @max(0.0, @min(1.0, box.style.opacity));
+
         // 1. Draw background
-        if (box.style.background_color.a > 0) {
+        if (box.style.background_color.a > 0 and opacity_factor > 0.0) {
+            var bg_col = box.style.background_color;
+            if (opacity_factor < 1.0) {
+                bg_col.a = @intFromFloat(@as(f32, @floatFromInt(bg_col.a)) * opacity_factor);
+            }
             try self.items.append(self.allocator, .{
                 .DrawRect = .{
                     .rect = box.dimensions.borderBox(),
-                    .color = box.style.background_color,
+                    .color = bg_col,
                 },
             });
         }
 
         // 2. Draw border
         if (box.dimensions.border.horizontalTotal() > 0 or box.dimensions.border.verticalTotal() > 0) {
+            var border_col = box.style.border_color;
+            if (opacity_factor < 1.0) {
+                border_col.a = @intFromFloat(@as(f32, @floatFromInt(border_col.a)) * opacity_factor);
+            }
             try self.items.append(self.allocator, .{
                 .DrawBorder = .{
                     .rect = box.dimensions.borderBox(),
                     .widths = box.dimensions.border,
-                    .color = box.style.border_color,
+                    .color = border_col,
                 },
             });
         }
 
         // 3. Draw text content
         if (box.text) |txt| {
+            var text_col = box.style.color;
+            if (opacity_factor < 1.0) {
+                text_col.a = @intFromFloat(@as(f32, @floatFromInt(text_col.a)) * opacity_factor);
+            }
             try self.items.append(self.allocator, .{
                 .DrawText = .{
                     .text = txt,
                     .origin = Point.init(box.dimensions.content.x, box.dimensions.content.y + (box.style.font_size * 0.8)),
                     .font_size = box.style.font_size,
-                    .color = box.style.color,
+                    .color = text_col,
                 },
             });
         }

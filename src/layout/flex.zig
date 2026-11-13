@@ -71,12 +71,27 @@ pub fn layoutFlex(box: *LayoutBox, containing_block: Dimensions) void {
     }
 
     for (box.children.items) |child| {
+        var cross_pos = current_cross;
+        const child_cross_size = if (is_row) child.dimensions.content.height else child.dimensions.content.width;
+        switch (box.style.align_items) {
+            .Center => cross_pos += @max(0.0, (max_cross_size - child_cross_size) / 2.0),
+            .FlexEnd => cross_pos += @max(0.0, max_cross_size - child_cross_size),
+            .Stretch => {
+                if (child.style.height.unit == .Auto and is_row) {
+                    child.dimensions.content.height = max_cross_size;
+                } else if (child.style.width.unit == .Auto and !is_row) {
+                    child.dimensions.content.width = max_cross_size;
+                }
+            },
+            else => {},
+        }
+
         if (is_row) {
             child.dimensions.content.x = current_main;
-            child.dimensions.content.y = current_cross;
+            child.dimensions.content.y = cross_pos;
             current_main += child.dimensions.content.width + gap;
         } else {
-            child.dimensions.content.x = current_cross;
+            child.dimensions.content.x = cross_pos;
             child.dimensions.content.y = current_main;
             current_main += child.dimensions.content.height + gap;
         }

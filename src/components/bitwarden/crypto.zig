@@ -256,10 +256,10 @@ pub fn decryptCipherString(allocator: std.mem.Allocator, cipher_str: []const u8,
     // Verify MAC if Type 1 or Type 2
     if (cs.enc_type == .AesCbc256_HmacSha256_B64 or cs.enc_type == .AesCbc128_HmacSha256_B64) {
         const mac_str = cs.mac orelse return error.MissingMac;
-        const mac_len = try dec.calcSizeForSlice(mac_str);
-        if (mac_len != 32) return error.InvalidMacLength;
+        const mac_len = dec.calcSizeForSlice(mac_str) catch return error.MacVerificationFailed;
+        if (mac_len != 32) return error.MacVerificationFailed;
         var expected_mac: [32]u8 = undefined;
-        try dec.decode(&expected_mac, mac_str);
+        dec.decode(&expected_mac, mac_str) catch return error.MacVerificationFailed;
 
         var mac_ctx: std.crypto.auth.hmac.sha2.HmacSha256 = .init(&keys.mac_key);
         mac_ctx.update(&iv);
