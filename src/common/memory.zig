@@ -131,6 +131,14 @@ pub const SubsystemMemoryTracker = struct {
         const MADV_DONTNEED: c_int = 4;
         _ = posix.system.madvise(@ptrCast(ptr), len, MADV_DONTNEED);
     }
+
+    /// Trims memory arenas and releases unused heap pages back to Linux kernel
+    pub fn deflateHeap() void {
+        const Libc = struct {
+            extern "c" fn malloc_trim(pad: usize) c_int;
+        };
+        _ = Libc.malloc_trim(0);
+    }
 };
 
 /// Fixed-size block slab allocator for ultra-low latency, zero fragmentation
@@ -230,6 +238,20 @@ pub fn SlabAllocator(comptime BlockSize: usize, comptime BlocksPerPage: usize) t
                 curr = p.next;
             }
         }
+
+        /// Deflates completely idle pages back to the Linux kernel via madvise
+        pub fn deflate(self: *Self) usize {
+            var reclaimed_bytes: usize = 0;
+            var curr = self.head_page;
+            while (curr) |p| {
+                if (p.free_count == BlocksPerPage) {
+                    SubsystemMemoryTracker.releasePagesToOs(@ptrCast(&p.memory[0]), BlockSize * BlocksPerPage);
+                    reclaimed_bytes += BlockSize * BlocksPerPage;
+                }
+                curr = p.next;
+            }
+            return reclaimed_bytes;
+        }
     };
 }
 
@@ -280,10 +302,16 @@ pub fn BoundedCache(comptime K: type, comptime V: type) type {
             }
 
             if (self.map.get(key)) |existing| {
-                self.current_bytes -= existing.bytes;
+                const old_bytes = existing.bytes;
+                self.current_bytes -= old_bytes;
                 existing.value = value;
                 existing.bytes = size_bytes;
                 self.current_bytes += size_bytes;
+                if (size_bytes > old_bytes) {
+                    SubsystemMemoryTracker.global.recordAlloc(self.subsystem, size_bytes - old_bytes);
+                } else if (old_bytes > size_bytes) {
+                    SubsystemMemoryTracker.global.recordFree(self.subsystem, old_bytes - size_bytes);
+                }
                 self.moveToHead(existing);
                 return;
             }
@@ -328,6 +356,16 @@ pub fn BoundedCache(comptime K: type, comptime V: type) type {
             entry.next = self.head;
             if (self.head) |h| h.prev = entry;
             self.head = entry;
+        }
+
+        pub fn trimToSize(self: *Self, target_bytes: usize) usize {
+            var evicted: usize = 0;
+            while (self.current_bytes > target_bytes and self.tail != null) {
+                const b = self.tail.?.bytes;
+                self.evictTail();
+                evicted += b;
+            }
+            return evicted;
         }
 
         fn evictTail(self: *Self) void {
@@ -385,4 +423,36 @@ test "bounded cache eviction" {
     try std.testing.expect(cache.get(2) == null);
     try std.testing.expectEqual(@as(?u32, 100), cache.get(1));
     try std.testing.expectEqual(@as(?u32, 300), cache.get(3));
+}
+
+test "slab allocator page deflation and bounded cache trimToSize" {
+    const allocator = std.testing.allocator;
+
+    // Test slab allocator deflation
+    var slab = SlabAllocator(64, 4).init(allocator, .Layout);
+    defer slab.deinit();
+
+    const b1 = try slab.create();
+    const b2 = try slab.create();
+    slab.destroy(b1);
+    slab.destroy(b2);
+
+    const reclaimed = slab.deflate();
+    try std.testing.expect(reclaimed >= 64 * 4);
+
+    // Test bounded cache trimToSize
+    var cache = BoundedCache(u32, u32).init(allocator, 200, .NetworkCache);
+    defer cache.deinit();
+
+    try cache.put(1, 10, 50);
+    try cache.put(2, 20, 50);
+    try cache.put(3, 30, 50);
+    try std.testing.expectEqual(@as(usize, 150), cache.current_bytes);
+
+    const trimmed = cache.trimToSize(60);
+    try std.testing.expect(trimmed >= 50);
+    try std.testing.expect(cache.current_bytes <= 60);
+
+    // Verify heap deflation call
+    SubsystemMemoryTracker.deflateHeap();
 }
