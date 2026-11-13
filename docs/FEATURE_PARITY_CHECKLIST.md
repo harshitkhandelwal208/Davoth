@@ -28,7 +28,7 @@ This document tracks implementation status and conformance against official web 
 | Search Engine Providers | DuckDuckGo, Google, SearXNG | `src/ui/urlbar.zig` (`SearchEngine.buildSearchUrl`) | **[x]** |
 | Internal Schemes | `about:home`, `about:blank`, `about:config`, `about:sessionrestore`, `about:pdf`, `about:downloads` | `src/ui/shell.zig` (`BrowserShell.navigate`) | **[x]** |
 | Local File Protocol | `file://` scheme loading | `src/ui/shell.zig`, `src/common/fs.zig` | **[x]** |
-| RFC 3986 URL Engine | Scheme, host, port, path, query, fragment parser | `src/common/url.zig` (`URL.parse`, `resolveRelative`) | **[x]** |
+| RFC 3986 & WHATWG URL Engine | Scheme, host, port, path, query, fragment parser, relative resolution, and WHATWG `URLSearchParams` | `src/common/url.zig` (`URL.parse`, `resolve`, `serialize`, `URLSearchParams`) | **[x]** |
 
 ---
 
@@ -127,7 +127,7 @@ This document tracks implementation status and conformance against official web 
 | :--- | :--- | :--- | :--- |
 | WHATWG HTML5 Tokenizer | State-machine based HTML streaming tokenizer | `src/html/tokenizer.zig` (`Tokenizer`) | **[x]** |
 | HTML5 Tree Builder | Insertion mode stack, table and formatting elements | `src/html/tree_builder.zig` (`TreeBuilder`) | **[x]** |
-| DOM Core Tree Model | Node, Element, Document, Text, Comment, `appendChild`, `insertBefore`, `replaceChild`, `removeChild`, `cloneNode`, `contains` | `src/dom/node.zig` (`Node`) | **[x]** |
+| DOM Core Tree Model | Node, Element, Document, Text, Comment, `appendChild`, `insertBefore`, `replaceChild`, `removeChild`, `cloneNode`, `contains`, Element Traversal (`firstElementChild`, `lastElementChild`, `nextElementSibling`, `previousElementSibling`, `childElementCount`, `parentElement`), compound `matches(table, selector)`, `closest(table, selector)` | `src/dom/node.zig` (`Node`) | **[x]** |
 | DOM Query Selectors | `querySelector`, `querySelectorAll`, `getElementsByTagName`, `getElementsByClassName` | `src/dom/node.zig` (`querySelector`, `querySelectorAll`) | **[x]** |
 | 3-Phase DOM Events | Capture, Target, Bubble event propagation with `stopPropagation`/`preventDefault` | `src/dom/events.zig` (`EventDispatcher.dispatchEvent`) | **[x]** |
 | DOM Mutation Observers | `childList`, `attributes`, `characterData` mutation tracking & queue | `src/dom/mutation.zig` (`MutationObserver`) | **[x]** |
@@ -158,7 +158,8 @@ This document tracks implementation status and conformance against official web 
 | Generational Garbage Collector | Nursery/mature spaces, root tracing, mark-and-sweep, native object tracking | `src/js/gc.zig` (`GarbageCollector`) | **[x]** |
 | ES2024 Array Helpers | `Array.prototype.toSorted`, `toReversed`, `with`, `toSpliced` | `src/js/builtins.zig` (`arrayToSorted`, `arrayToReversed`, `arrayWith`, `arrayToSpliced`) | **[x]** |
 | Object Reflection & Grouping | `Object.groupBy` (ES2024), `Object.keys`, `Object.values`, `Object.assign` | `src/js/builtins.zig` (`nativeObjectGroupBy`, `nativeObjectKeys`, etc.) | **[x]** |
-| Modern Web APIs | `crypto.randomUUID` (RFC 4122 v4), `crypto.getRandomValues`, `btoa`, `atob`, `structuredClone`, `queueMicrotask`, `TextEncoder`, `TextDecoder` | `src/js/builtins.zig` | **[x]** |
+| Modern Web APIs | `URL`, `URLSearchParams`, `crypto.randomUUID` (RFC 4122 v4), `crypto.getRandomValues`, `btoa`, `atob`, `structuredClone`, `queueMicrotask`, `TextEncoder`, `TextDecoder` | `src/js/builtins.zig` | **[x]** |
+| Constructor 'new' & This Binding | AST prefix `new Callee(...)` parsing, bytecode stack `this` binding in `GetProp` and `Call` opcodes | `src/js/parser.zig`, `src/js/interpreter.zig` | **[x]** |
 | Promise Combinators | `Promise.withResolvers` (ES2024), `Promise.allSettled`, `Promise.any`, `Promise.all`, `Promise.race` | `src/js/builtins.zig`, `src/js/promise.zig` | **[x]** |
 | JSON Engine with Reviver | `JSON.parse` with recursive key/value reviver support, `JSON.stringify` | `src/js/builtins.zig` (`jsonParse`, `jsonStringify`) | **[x]** |
 | WebAssembly (WASM) Engine | Binary WASM module decoding, linear memory grow/load/store, arithmetic (`i32.add/sub/mul/div_s/div_u/rem_s/rem_u`), bitwise (`and/or/xor/shl/shr_s/shr_u`), comparisons (`eqz/eq/ne/lt_s/lt_u/gt_s/gt_u/le_s/ge_s`), `select`, `drop`, `nop` | `src/wasm/decoder.zig`, `src/wasm/validator.zig`, `src/wasm/runtime.zig` | **[x]** |
