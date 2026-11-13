@@ -174,13 +174,18 @@ pub fn initBuiltins(vm: *VM) !void {
     const with_resolvers_fn = try vm.gc.allocateFunction(null, nativePromiseWithResolvers, @ptrCast(vm));
     try promise_obj.setProperty(alloc, try table.intern("withResolvers"), JSValue.fromObject(with_resolvers_fn));
 
-    // crypto: randomUUID, getRandomValues
+    // crypto: randomUUID, getRandomValues, subtle.digest
     const crypto_obj = try vm.gc.allocateObject(null);
     const uuid_fn = try vm.gc.allocateFunction(null, nativeCryptoRandomUUID, @ptrCast(vm));
     try crypto_obj.setProperty(alloc, try table.intern("randomUUID"), JSValue.fromObject(uuid_fn));
 
     const rand_values_fn = try vm.gc.allocateFunction(null, nativeCryptoGetRandomValues, @ptrCast(vm));
     try crypto_obj.setProperty(alloc, try table.intern("getRandomValues"), JSValue.fromObject(rand_values_fn));
+
+    const subtle_obj = try vm.gc.allocateObject(null);
+    const digest_fn = try vm.gc.allocateFunction(null, nativeSubtleDigest, @ptrCast(vm));
+    try subtle_obj.setProperty(alloc, try table.intern("digest"), JSValue.fromObject(digest_fn));
+    try crypto_obj.setProperty(alloc, try table.intern("subtle"), JSValue.fromObject(subtle_obj));
 
     try global.setProperty(alloc, try table.intern("crypto"), JSValue.fromObject(crypto_obj));
 
@@ -311,11 +316,17 @@ pub fn initBuiltins(vm: *VM) !void {
     const win_disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("dispatchEvent"), JSValue.fromObject(win_disp_ev_fn));
 
-    // Event and CustomEvent constructors
+    // Event, CustomEvent, MouseEvent, KeyboardEvent, FocusEvent constructors
     const ev_ctor = try vm.gc.allocateFunction(null, nativeEventConstructor, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("Event"), JSValue.fromObject(ev_ctor));
     const cust_ev_ctor = try vm.gc.allocateFunction(null, nativeCustomEventConstructor, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("CustomEvent"), JSValue.fromObject(cust_ev_ctor));
+    const mouse_ev_ctor = try vm.gc.allocateFunction(null, nativeMouseEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("MouseEvent"), JSValue.fromObject(mouse_ev_ctor));
+    const kb_ev_ctor = try vm.gc.allocateFunction(null, nativeKeyboardEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("KeyboardEvent"), JSValue.fromObject(kb_ev_ctor));
+    const focus_ev_ctor = try vm.gc.allocateFunction(null, nativeFocusEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("FocusEvent"), JSValue.fromObject(focus_ev_ctor));
 
     // Headers, Request, Response constructors
     const headers_ctor = try vm.gc.allocateFunction(null, nativeHeadersConstructor, @ptrCast(vm));
@@ -387,6 +398,9 @@ pub fn initBuiltins(vm: *VM) !void {
 
     const doc_create_text_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateTextNode, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("createTextNode"), JSValue.fromObject(doc_create_text_fn));
+
+    const doc_create_frag_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateDocumentFragment, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createDocumentFragment"), JSValue.fromObject(doc_create_frag_fn));
 
     const doc_add_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetAddEventListener, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("addEventListener"), JSValue.fromObject(doc_add_ev_fn));
@@ -748,14 +762,56 @@ fn nativePromiseAny(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!J
     return error.AllPromisesRejected;
 }
 
-fn nativePromiseResolve(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
-    if (args.len > 0) return args[0];
-    return JSValue.undefined_val;
+fn createPromiseObject(vm: *VM, val: JSValue) anyerror!*JSObject {
+    const p_obj = try vm.gc.allocateObject(null);
+    p_obj.builtin_type = .Promise;
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("_value"), val);
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("_state"), JSValue.fromStringAtom(try vm.atom_table.intern("fulfilled")));
+    const then_fn = try vm.gc.allocateFunction(null, nativePromiseThen, @ptrCast(vm));
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("then"), JSValue.fromObject(then_fn));
+    const catch_fn = try vm.gc.allocateFunction(null, nativePromiseCatch, @ptrCast(vm));
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("catch"), JSValue.fromObject(catch_fn));
+    return p_obj;
 }
 
-fn nativePromiseReject(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
-    if (args.len > 0) return args[0];
-    return JSValue.undefined_val;
+fn nativePromiseThen(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const val = inst.getProperty(try vm.atom_table.intern("_value")) orelse JSValue.undefined_val;
+    if (args.len > 0 and args[0].isObject()) {
+        const next_val = try vm.call(args[0], JSValue.undefined_val, &[_]JSValue{val});
+        const next_prom = try createPromiseObject(vm, next_val);
+        return JSValue.fromObject(next_prom);
+    }
+    return this_val;
+}
+
+fn nativePromiseCatch(_: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    return this_val;
+}
+
+fn nativePromiseResolve(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len > 0 and args[0].isObject() and args[0].toObject().?.builtin_type == .Promise) {
+        return args[0];
+    }
+    const val = if (args.len > 0) args[0] else JSValue.undefined_val;
+    const p_obj = try createPromiseObject(vm, val);
+    return JSValue.fromObject(p_obj);
+}
+
+fn nativePromiseReject(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const val = if (args.len > 0) args[0] else JSValue.undefined_val;
+    const p_obj = try vm.gc.allocateObject(null);
+    p_obj.builtin_type = .Promise;
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("_value"), val);
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("_state"), JSValue.fromStringAtom(try vm.atom_table.intern("rejected")));
+    const then_fn = try vm.gc.allocateFunction(null, nativePromiseThen, @ptrCast(vm));
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("then"), JSValue.fromObject(then_fn));
+    const catch_fn = try vm.gc.allocateFunction(null, nativePromiseCatch, @ptrCast(vm));
+    try p_obj.setProperty(vm.allocator, try vm.atom_table.intern("catch"), JSValue.fromObject(catch_fn));
+    return JSValue.fromObject(p_obj);
 }
 
 fn jsonValueToJsValue(vm: *VM, val: std.json.Value) anyerror!JSValue {
@@ -1906,6 +1962,32 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     const get_cr_fn = try vm.gc.allocateFunction(null, nativeElementGetClientRects, @ptrCast(vm));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("getClientRects"), JSValue.fromObject(get_cr_fn));
 
+    const append_fn = try vm.gc.allocateFunction(null, nativeElementAppend, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("append"), JSValue.fromObject(append_fn));
+
+    const prepend_fn = try vm.gc.allocateFunction(null, nativeElementPrepend, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("prepend"), JSValue.fromObject(prepend_fn));
+
+    const before_fn = try vm.gc.allocateFunction(null, nativeElementBefore, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("before"), JSValue.fromObject(before_fn));
+
+    const after_fn = try vm.gc.allocateFunction(null, nativeElementAfter, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("after"), JSValue.fromObject(after_fn));
+
+    const focus_fn = try vm.gc.allocateFunction(null, nativeElementFocus, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("focus"), JSValue.fromObject(focus_fn));
+
+    const blur_fn = try vm.gc.allocateFunction(null, nativeElementBlur, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("blur"), JSValue.fromObject(blur_fn));
+
+    const scroll_fn = try vm.gc.allocateFunction(null, nativeElementScrollIntoView, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("scrollIntoView"), JSValue.fromObject(scroll_fn));
+
+    // Form element default properties
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("value"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("checked"), JSValue.false_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("disabled"), JSValue.false_val);
+
     if (std.ascii.eqlIgnoreCase(tag, "canvas")) {
         const get_ctx_fn = try vm.gc.allocateFunction(null, nativeCanvasGetContext, @ptrCast(vm));
         try inst.setProperty(vm.allocator, try vm.atom_table.intern("getContext"), JSValue.fromObject(get_ctx_fn));
@@ -1956,15 +2038,34 @@ fn nativeElementAppendChild(ctx: *anyopaque, this_val: JSValue, args: []const JS
     if (args.len == 0 or !args[0].isObject()) return JSValue.undefined_val;
 
     const child_obj = args[0].toObject().?;
-    try child_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
-
     const children_atom = try vm.atom_table.intern("_children");
     const children_arr = (inst.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
     if (children_arr) |c_arr| {
         var items: std.ArrayList(JSValue) = .empty;
         defer items.deinit(vm.allocator);
         try getArrayElements(vm, c_arr, &items);
-        try items.append(vm.allocator, args[0]);
+
+        const nt_atom = try vm.atom_table.intern("nodeType");
+        const is_frag = if (child_obj.getProperty(nt_atom)) |nt| nt.toInt32() == 11 else false;
+        if (is_frag) {
+            const frag_children_arr = (child_obj.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
+            if (frag_children_arr) |f_arr| {
+                var frag_items: std.ArrayList(JSValue) = .empty;
+                defer frag_items.deinit(vm.allocator);
+                try getArrayElements(vm, f_arr, &frag_items);
+                for (frag_items.items) |f_child| {
+                    if (f_child.toObject()) |fc_obj| {
+                        try fc_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
+                    }
+                    try items.append(vm.allocator, f_child);
+                }
+                const empty_frag = try createArray(vm, &[_]JSValue{});
+                try child_obj.setProperty(vm.allocator, children_atom, JSValue.fromObject(empty_frag));
+            }
+        } else {
+            try child_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
+            try items.append(vm.allocator, args[0]);
+        }
 
         const new_arr = try createArray(vm, items.items);
         try inst.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
@@ -2424,7 +2525,6 @@ fn nativeElementInsertBefore(ctx: *anyopaque, this_val: JSValue, args: []const J
 
     const new_child = args[0];
     const new_obj = new_child.toObject().?;
-    try new_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
 
     const children_atom = try vm.atom_table.intern("_children");
     const c_val = inst.getProperty(children_atom) orelse return args[0];
@@ -2434,20 +2534,42 @@ fn nativeElementInsertBefore(ctx: *anyopaque, this_val: JSValue, args: []const J
     defer list.deinit(vm.allocator);
     try getArrayElements(vm, c_arr, &list);
 
-    var inserted = false;
+    const nt_atom = try vm.atom_table.intern("nodeType");
+    const is_frag = if (new_obj.getProperty(nt_atom)) |nt| nt.toInt32() == 11 else false;
+
+    var insert_idx = list.items.len;
     if (args.len > 1 and args[1].isObject()) {
         const ref_obj = args[1].toObject().?;
         for (list.items, 0..) |it, idx| {
             if (it.toObject() == ref_obj) {
-                try list.insert(vm.allocator, idx, new_child);
-                inserted = true;
+                insert_idx = idx;
                 break;
             }
         }
     }
 
-    if (!inserted) {
-        try list.append(vm.allocator, new_child);
+    if (is_frag) {
+        const frag_children_arr = (new_obj.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
+        if (frag_children_arr) |f_arr| {
+            var frag_items: std.ArrayList(JSValue) = .empty;
+            defer frag_items.deinit(vm.allocator);
+            try getArrayElements(vm, f_arr, &frag_items);
+            for (frag_items.items, 0..) |f_child, fi| {
+                if (f_child.toObject()) |fc_obj| {
+                    try fc_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
+                }
+                try list.insert(vm.allocator, insert_idx + fi, f_child);
+            }
+            const empty_frag = try createArray(vm, &[_]JSValue{});
+            try new_obj.setProperty(vm.allocator, children_atom, JSValue.fromObject(empty_frag));
+        }
+    } else {
+        try new_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), this_val);
+        if (insert_idx < list.items.len) {
+            try list.insert(vm.allocator, insert_idx, new_child);
+        } else {
+            try list.append(vm.allocator, new_child);
+        }
     }
 
     const new_arr = try createArray(vm, list.items);
@@ -2822,6 +2944,238 @@ fn nativeNumberFormatFormat(ctx: *anyopaque, _: JSValue, args: []const JSValue) 
         else => "0",
     };
     return JSValue.fromStringAtom(try vm.atom_table.intern(str));
+}
+
+fn nativeElementAppend(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    for (args) |arg| {
+        if (arg.isObject()) {
+            _ = try nativeElementAppendChild(ctx, this_val, &[_]JSValue{arg});
+        } else if (arg.isString()) {
+            const text_node = try nativeDocumentCreateTextNode(ctx, this_val, &[_]JSValue{arg});
+            _ = try nativeElementAppendChild(ctx, this_val, &[_]JSValue{text_node});
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeElementPrepend(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const children_atom = try vm.atom_table.intern("_children");
+    const c_arr = (inst.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
+
+    var first_child: JSValue = JSValue.null_val;
+    if (c_arr) |ca| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, ca, &items);
+        if (items.items.len > 0) {
+            first_child = items.items[0];
+        }
+    }
+
+    for (args) |arg| {
+        var node_to_insert = arg;
+        if (arg.isString()) {
+            node_to_insert = try nativeDocumentCreateTextNode(ctx, this_val, &[_]JSValue{arg});
+        }
+        if (node_to_insert.isObject()) {
+            if (first_child.isObject()) {
+                _ = try nativeElementInsertBefore(ctx, this_val, &[_]JSValue{ node_to_insert, first_child });
+            } else {
+                _ = try nativeElementAppendChild(ctx, this_val, &[_]JSValue{node_to_insert});
+            }
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeElementBefore(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const parent_val = inst.getProperty(try vm.atom_table.intern("parentNode")) orelse return JSValue.undefined_val;
+    if (!parent_val.isObject()) return JSValue.undefined_val;
+
+    for (args) |arg| {
+        var node_to_insert = arg;
+        if (arg.isString()) {
+            node_to_insert = try nativeDocumentCreateTextNode(ctx, parent_val, &[_]JSValue{arg});
+        }
+        if (node_to_insert.isObject()) {
+            _ = try nativeElementInsertBefore(ctx, parent_val, &[_]JSValue{ node_to_insert, this_val });
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeElementAfter(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const parent_val = inst.getProperty(try vm.atom_table.intern("parentNode")) orelse return JSValue.undefined_val;
+    const parent_obj = parent_val.toObject() orelse return JSValue.undefined_val;
+
+    const children_atom = try vm.atom_table.intern("_children");
+    const c_arr = (parent_obj.getProperty(children_atom) orelse JSValue.undefined_val).toObject();
+    var next_sibling: JSValue = JSValue.null_val;
+    if (c_arr) |ca| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, ca, &items);
+        for (items.items, 0..) |it, idx| {
+            if (it.toObject() == inst and idx + 1 < items.items.len) {
+                next_sibling = items.items[idx + 1];
+                break;
+            }
+        }
+    }
+
+    for (args) |arg| {
+        var node_to_insert = arg;
+        if (arg.isString()) {
+            node_to_insert = try nativeDocumentCreateTextNode(ctx, parent_val, &[_]JSValue{arg});
+        }
+        if (node_to_insert.isObject()) {
+            if (next_sibling.isObject()) {
+                _ = try nativeElementInsertBefore(ctx, parent_val, &[_]JSValue{ node_to_insert, next_sibling });
+            } else {
+                _ = try nativeElementAppendChild(ctx, parent_val, &[_]JSValue{node_to_insert});
+            }
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeElementFocus(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev = try nativeEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(try vm.atom_table.intern("focus")),
+    });
+    return try nativeEventTargetDispatchEvent(ctx, this_val, &[_]JSValue{ev});
+}
+
+fn nativeElementBlur(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev = try nativeEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(try vm.atom_table.intern("blur")),
+    });
+    return try nativeEventTargetDispatchEvent(ctx, this_val, &[_]JSValue{ev});
+}
+
+fn nativeElementScrollIntoView(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeDocumentCreateDocumentFragment(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const frag = try vm.gc.allocateObject(null);
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(11));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#document-fragment")));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("ownerDocument"), this_val);
+
+    const children_arr = try createArray(vm, &[_]JSValue{});
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("_children"), JSValue.fromObject(children_arr));
+
+    const append_child_fn = try vm.gc.allocateFunction(null, nativeElementAppendChild, @ptrCast(vm));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("appendChild"), JSValue.fromObject(append_child_fn));
+
+    const append_fn = try vm.gc.allocateFunction(null, nativeElementAppend, @ptrCast(vm));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("append"), JSValue.fromObject(append_fn));
+
+    const prepend_fn = try vm.gc.allocateFunction(null, nativeElementPrepend, @ptrCast(vm));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("prepend"), JSValue.fromObject(prepend_fn));
+
+    const qs_fn = try vm.gc.allocateFunction(null, nativeElementQuerySelector, @ptrCast(vm));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("querySelector"), JSValue.fromObject(qs_fn));
+
+    const qsa_fn = try vm.gc.allocateFunction(null, nativeElementQuerySelectorAll, @ptrCast(vm));
+    try frag.setProperty(vm.allocator, try vm.atom_table.intern("querySelectorAll"), JSValue.fromObject(qsa_fn));
+
+    return JSValue.fromObject(frag);
+}
+
+fn nativeMouseEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev_obj = ev.toObject().?;
+
+    var client_x: f64 = 0;
+    var client_y: f64 = 0;
+    var button: i32 = 0;
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("clientX"))) |cx| client_x = cx.toFloat64();
+        if (init.getProperty(try vm.atom_table.intern("clientY"))) |cy| client_y = cy.toFloat64();
+        if (init.getProperty(try vm.atom_table.intern("button"))) |btn| button = btn.toInt32();
+    }
+
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("clientX"), JSValue.fromFloat64(client_x));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("clientY"), JSValue.fromFloat64(client_y));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("pageX"), JSValue.fromFloat64(client_x));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("pageY"), JSValue.fromFloat64(client_y));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("screenX"), JSValue.fromFloat64(client_x));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("screenY"), JSValue.fromFloat64(client_y));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("button"), JSValue.fromInt32(button));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("buttons"), JSValue.fromInt32(1));
+
+    return ev;
+}
+
+fn nativeKeyboardEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev_obj = ev.toObject().?;
+
+    var key_val = JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    var code_val = JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    var key_code: i32 = 0;
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("key"))) |k| key_val = k;
+        if (init.getProperty(try vm.atom_table.intern("code"))) |cd| code_val = cd;
+        if (init.getProperty(try vm.atom_table.intern("keyCode"))) |kc| key_code = kc.toInt32();
+    }
+
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("key"), key_val);
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("code"), code_val);
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("keyCode"), JSValue.fromInt32(key_code));
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("which"), JSValue.fromInt32(key_code));
+
+    return ev;
+}
+
+fn nativeFocusEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev_obj = ev.toObject().?;
+
+    var rel_target = JSValue.null_val;
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("relatedTarget"))) |rt| rel_target = rt;
+    }
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("relatedTarget"), rel_target);
+
+    return ev;
+}
+
+fn nativeSubtleDigest(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    var input_bytes: []const u8 = "";
+    if (args.len > 1) {
+        if (args[1].isString()) {
+            input_bytes = vm.atom_table.get(args[1].toStringAtom());
+        }
+    }
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(input_bytes);
+    var out: [32]u8 = undefined;
+    h.final(&out);
+
+    const hex_slice = std.fmt.bytesToHex(out, .lower);
+    const hex_val = JSValue.fromStringAtom(try vm.atom_table.intern(&hex_slice));
+
+    const p = try createPromiseObject(vm, hex_val);
+    return JSValue.fromObject(p);
 }
 
 fn nativeCanvasGetContext(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -4085,4 +4439,115 @@ test "universal web standards: getComputedStyle matchMedia node constants observ
     const res2 = try vm.execute(&code2);
     try std.testing.expect(res2.isString());
     try std.testing.expectEqualStrings("42", atom_table.get(res2.toStringAtom()));
+}
+
+test "universal web standards: DocumentFragment ParentNode ChildNode Events and SubtleCrypto" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. DocumentFragment and child transfer upon appendChild
+    const script_frag =
+        \\let frag = document.createDocumentFragment();
+        \\let item1 = document.createElement("div");
+        \\let item2 = document.createElement("span");
+        \\frag.appendChild(item1);
+        \\frag.appendChild(item2);
+        \\let parent = document.createElement("section");
+        \\parent.appendChild(frag);
+        \\let parentLen = parent._children.length;
+        \\let fragLen = frag._children.length;
+        \\let item1Parent = (item1.parentNode === parent);
+        \\return (parentLen === 2) && (fragLen === 0) && item1Parent;
+    ;
+    var p1 = Parser.init(allocator, script_frag);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_frag");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. ParentNode / ChildNode methods: append, prepend, before, after
+    const script_nodes =
+        \\let root = document.createElement("div");
+        \\let mid = document.createElement("p");
+        \\root.appendChild(mid);
+        \\let pre = document.createElement("header");
+        \\root.prepend(pre);
+        \\let post = document.createElement("footer");
+        \\root.append(post);
+        \\let b = document.createElement("span");
+        \\mid.before(b);
+        \\let a = document.createElement("em");
+        \\mid.after(a);
+        \\let totalChildren = root._children.length;
+        \\return (totalChildren === 5);
+    ;
+    var p2 = Parser.init(allocator, script_nodes);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_nodes");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isBoolean());
+    try std.testing.expect(res2.toBoolean());
+
+    // 3. MouseEvent, KeyboardEvent, and FocusEvent constructors
+    const script_events =
+        \\let me = new MouseEvent("click", { clientX: 150, clientY: 250, button: 0 });
+        \\let ke = new KeyboardEvent("keydown", { key: "Enter", keyCode: 13 });
+        \\let fe = new FocusEvent("focus");
+        \\let mOk = (me.clientX === 150) && (me.clientY === 250) && (me.button === 0);
+        \\let kOk = (ke.key === "Enter") && (ke.keyCode === 13);
+        \\let fOk = (fe.type === "focus");
+        \\return mOk && kOk && fOk;
+    ;
+    var p3 = Parser.init(allocator, script_events);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_events");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
+
+    // 4. crypto.subtle.digest SHA-256 and Promise chaining
+    const script_crypto =
+        \\let p = crypto.subtle.digest("SHA-256", "hello");
+        \\let hash = p._value;
+        \\return hash;
+    ;
+    var p4 = Parser.init(allocator, script_crypto);
+    const ast4 = try p4.parseProgram();
+    defer ast4.deinit(allocator);
+
+    var c4 = BytecodeCompiler.init(allocator, atom_table, "test_crypto");
+    var code4 = try c4.compile(ast4);
+    defer code4.deinit();
+
+    const res4 = try vm.execute(&code4);
+    try std.testing.expect(res4.isString());
+    try std.testing.expectEqualStrings("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", atom_table.get(res4.toStringAtom()));
 }
