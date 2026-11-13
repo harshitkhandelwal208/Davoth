@@ -312,6 +312,51 @@ pub const BrowserShell = struct {
         }
         return act;
     }
+
+    pub fn unlockBitwarden(self: *BrowserShell, master_password: []const u8, email: []const u8) !void {
+        const crypto = @import("../components/bitwarden/crypto.zig");
+        const master_key = try crypto.deriveMasterKey(master_password, email, 5000);
+        const keys = crypto.deriveEncryptionKeys(master_key);
+        self.vault.unlock(keys);
+    }
+
+    pub fn lockBitwarden(self: *BrowserShell) void {
+        self.vault.lock();
+    }
+
+    pub fn saveBitwardenLogin(self: *BrowserShell, uri: []const u8, username: []const u8, password: []const u8, name: []const u8) !void {
+        try self.vault.addCipher(.{
+            .id = try self.allocator.dupe(u8, "davoth-item"),
+            .cipher_type = .Login,
+            .name = try self.allocator.dupe(u8, name),
+            .login = .{
+                .uri = try self.allocator.dupe(u8, uri),
+                .username = try self.allocator.dupe(u8, username),
+                .password = try self.allocator.dupe(u8, password),
+            },
+        });
+    }
+
+    pub fn generateBitwardenPassword(self: *BrowserShell, length: usize, upper: bool, lower: bool, nums: bool, syms: bool) ![]u8 {
+        const crypto = @import("../components/bitwarden/crypto.zig");
+        return crypto.generatePassword(self.allocator, length, upper, lower, nums, syms);
+    }
+
+    pub fn autofillActiveTab(self: *BrowserShell) !bool {
+        if (!self.vault.is_unlocked) return false;
+        const doc = self.current_doc orelse return false;
+        const tab = self.tab_manager.activeTab() orelse return false;
+
+        var logins = try self.vault.findLoginsForHost(self.allocator, tab.url);
+        defer logins.deinit(self.allocator);
+
+        if (logins.items.len > 0 and logins.items[0].login != null) {
+            const form = detectLoginForm(doc, self.atom_table);
+            try autofillForm(self.allocator, form, logins.items[0].login.?, self.atom_table);
+            return true;
+        }
+        return false;
+    }
 };
 
 test "browser shell initialization, navigation, and script execution" {
@@ -324,4 +369,34 @@ test "browser shell initialization, navigation, and script execution" {
 
     const val = try shell.evalScript("let x = 10; let y = 20; return x + y;");
     try std.testing.expectEqual(@as(f64, 30.0), val.toFloat64());
+}
+
+test "browser shell bitwarden native autofill integration" {
+    const allocator = std.testing.allocator;
+    const shell = try BrowserShell.init(allocator, 800, 600);
+    defer shell.deinit();
+
+    try shell.unlockBitwarden("MasterP@ssword2026!", "user@davoth.org");
+    try shell.saveBitwardenLogin("about:home", "admin@davoth.org", "SecretPassword!", "Davoth Admin");
+
+    try shell.navigate("about:home");
+
+    // Verify form was detected and filled
+    const doc = shell.current_doc.?;
+    const form = detectLoginForm(doc, shell.atom_table);
+    try std.testing.expect(form.username_node != null);
+    try std.testing.expect(form.password_node != null);
+
+    const val_atom = try shell.atom_table.intern("value");
+    try std.testing.expectEqualStrings("admin@davoth.org", form.username_node.?.getAttribute(val_atom).?);
+    try std.testing.expectEqualStrings("SecretPassword!", form.password_node.?.getAttribute(val_atom).?);
+
+    // Verify password generator works through shell
+    const gen_pass = try shell.generateBitwardenPassword(20, true, true, true, true);
+    defer allocator.free(gen_pass);
+    try std.testing.expectEqual(@as(usize, 20), gen_pass.len);
+
+    // Lock vault
+    shell.lockBitwarden();
+    try std.testing.expect(!shell.vault.is_unlocked);
 }
