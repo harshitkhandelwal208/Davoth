@@ -208,4 +208,7 @@ test "subsystem full verification" {
     _ = @import("ui/tabs.zig");
     _ = @import("ui/shell.zig");
     _ = @import("ui/containers_ui.zig");
+    _ = @import("devtools/inspector.zig");
+    _ = @import("devtools/network.zig");
+    _ = @import("devtools/debugger.zig");
 }
