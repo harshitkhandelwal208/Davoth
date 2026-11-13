@@ -55,6 +55,16 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
+        if (std.mem.eql(u8, cmd, "--test-acid3")) {
+            try runAcid3(arena);
+            return;
+        }
+
+        if (std.mem.eql(u8, cmd, "--test-speedometer")) {
+            try runSpeedometer(arena);
+            return;
+        }
+
         if (std.mem.eql(u8, cmd, "--test-test262")) {
             try runTest262(arena);
             return;
@@ -94,6 +104,8 @@ fn printHelp() void {
         \\  --test-adnauseam               Run AdNauseam WebExtensions integration tests
         \\  --bench-memory                 Run per-subsystem memory accounting benchmarks
         \\  --test-wpt                     Run Web Platform Tests (WPT) compliance suite
+        \\  --test-acid3                   Run Acid3 DOM Core and Events conformance suite
+        \\  --test-speedometer             Run Speedometer TodoMVC and Flexbox benchmark suite
         \\  --test-test262                 Run Test262 ECMAScript conformance suite
         \\  --fuzz                         Run parser and codec differential fuzzing harness
         \\
@@ -324,6 +336,32 @@ fn runWpt(allocator: std.mem.Allocator) !void {
     std.debug.print("Running Web Platform Tests (WPT) suite...\n", .{});
     const stats = try runner.runAll();
     std.debug.print("WPT Suite Completed: {d}/{d} passed, {d} failed\n", .{ stats.passed, stats.total, stats.failed });
+}
+
+fn runAcid3(allocator: std.mem.Allocator) !void {
+    var runner = try Davoth.tools.wpt_runner.WptRunner.init(allocator);
+    defer runner.deinit();
+    std.debug.print("Running Acid3 DOM Core & Events conformance suite...\n", .{});
+    try runner.runAcid3Suite();
+    var passed: usize = 0;
+    var failed: usize = 0;
+    for (runner.results.items) |r| {
+        if (r.status == .Pass) passed += 1 else failed += 1;
+    }
+    std.debug.print("Acid3 Suite Completed: {d}/{d} passed, {d} failed\n", .{ passed, runner.results.items.len, failed });
+}
+
+fn runSpeedometer(allocator: std.mem.Allocator) !void {
+    var runner = try Davoth.tools.wpt_runner.WptRunner.init(allocator);
+    defer runner.deinit();
+    std.debug.print("Running Speedometer TodoMVC & Flexbox reflow benchmark suite...\n", .{});
+    try runner.runSpeedometerSuite();
+    var passed: usize = 0;
+    var failed: usize = 0;
+    for (runner.results.items) |r| {
+        if (r.status == .Pass) passed += 1 else failed += 1;
+    }
+    std.debug.print("Speedometer Suite Completed: {d}/{d} passed, {d} failed\n", .{ passed, runner.results.items.len, failed });
 }
 
 fn runTest262(allocator: std.mem.Allocator) !void {

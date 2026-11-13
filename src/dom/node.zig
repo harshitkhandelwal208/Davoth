@@ -204,6 +204,142 @@ pub const Node = struct {
         }
         return null;
     }
+
+    pub fn hasAttribute(self: *const Node, name: AtomId) bool {
+        return self.getAttribute(name) != null;
+    }
+
+    pub fn removeAttribute(self: *Node, allocator: std.mem.Allocator, name: AtomId) bool {
+        for (self.attributes.items, 0..) |attr, i| {
+            if (attr.name == name) {
+                allocator.free(attr.value);
+                SubsystemMemoryTracker.global.recordFree(.DOM, attr.value.len);
+                _ = self.attributes.orderedRemove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn getElementsByTagName(self: *Node, allocator: std.mem.Allocator, table: *AtomTable, tag_name: []const u8) !std.ArrayList(*Node) {
+        var results = std.ArrayList(*Node).empty;
+        const tag_atom = try table.intern(tag_name);
+        try self.collectByTagName(allocator, tag_atom, &results);
+        return results;
+    }
+
+    fn collectByTagName(self: *Node, allocator: std.mem.Allocator, tag_atom: AtomId, results: *std.ArrayList(*Node)) !void {
+        if (self.node_type == .Element and self.tag_name == tag_atom) {
+            try results.append(allocator, self);
+        }
+        var curr = self.first_child;
+        while (curr) |child| {
+            try child.collectByTagName(allocator, tag_atom, results);
+            curr = child.next_sibling;
+        }
+    }
+
+    pub fn getElementsByClassName(self: *Node, allocator: std.mem.Allocator, table: *AtomTable, class_name: []const u8) !std.ArrayList(*Node) {
+        var results = std.ArrayList(*Node).empty;
+        const class_atom = try table.intern("class");
+        try self.collectByClassName(allocator, class_atom, class_name, &results);
+        return results;
+    }
+
+    fn collectByClassName(self: *Node, allocator: std.mem.Allocator, class_atom: AtomId, target_class: []const u8, results: *std.ArrayList(*Node)) !void {
+        if (self.node_type == .Element) {
+            if (self.getAttribute(class_atom)) |val| {
+                var it = std.mem.tokenizeScalar(u8, val, ' ');
+                while (it.next()) |token| {
+                    if (std.mem.eql(u8, token, target_class)) {
+                        try results.append(allocator, self);
+                        break;
+                    }
+                }
+            }
+        }
+        var curr = self.first_child;
+        while (curr) |child| {
+            try child.collectByClassName(allocator, class_atom, target_class, results);
+            curr = child.next_sibling;
+        }
+    }
+
+    pub fn querySelector(self: *Node, table: *AtomTable, selector: []const u8) ?*Node {
+        const trimmed = std.mem.trim(u8, selector, " ");
+        if (trimmed.len == 0) return null;
+
+        if (trimmed[0] == '#') {
+            return self.getElementById(table, trimmed[1..]);
+        }
+
+        if (trimmed[0] == '.') {
+            const class_atom = table.intern("class") catch return null;
+            return self.findFirstClass(class_atom, trimmed[1..]);
+        }
+
+        const tag_atom = table.intern(trimmed) catch return null;
+        return self.findFirstTag(tag_atom);
+    }
+
+    fn findFirstTag(self: *Node, tag_atom: AtomId) ?*Node {
+        if (self.node_type == .Element and self.tag_name == tag_atom) return self;
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.findFirstTag(tag_atom)) |f| return f;
+            curr = child.next_sibling;
+        }
+        return null;
+    }
+
+    fn findFirstClass(self: *Node, class_atom: AtomId, target_class: []const u8) ?*Node {
+        if (self.node_type == .Element) {
+            if (self.getAttribute(class_atom)) |val| {
+                var it = std.mem.tokenizeScalar(u8, val, ' ');
+                while (it.next()) |token| {
+                    if (std.mem.eql(u8, token, target_class)) return self;
+                }
+            }
+        }
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.findFirstClass(class_atom, target_class)) |f| return f;
+            curr = child.next_sibling;
+        }
+        return null;
+    }
+
+    pub fn cloneNode(self: *const Node, allocator: std.mem.Allocator, deep: bool) !*Node {
+        const copy = if (self.node_type == .Text)
+            try Node.createText(allocator, self.text_content orelse "")
+        else
+            try Node.create(allocator, self.node_type, self.tag_name);
+
+        for (self.attributes.items) |attr| {
+            try copy.setAttribute(allocator, attr.name, attr.value);
+        }
+
+        if (deep) {
+            var curr = self.first_child;
+            while (curr) |child| {
+                const child_copy = try child.cloneNode(allocator, true);
+                try copy.appendChild(allocator, child_copy);
+                curr = child.next_sibling;
+            }
+        }
+
+        return copy;
+    }
+
+    pub fn contains(self: *const Node, other: *const Node) bool {
+        if (self == other) return true;
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.contains(other)) return true;
+            curr = child.next_sibling;
+        }
+        return false;
+    }
 };
 
 test "dom node creation and hierarchy" {
@@ -231,4 +367,54 @@ test "dom node creation and hierarchy" {
     try std.testing.expectEqual(div.first_child, span);
     try std.testing.expectEqual(span.first_child, text);
     try std.testing.expectEqualStrings("Hello Davoth", text.text_content.?);
+}
+
+test "dom node querySelector, getElementsByTagName, getElementsByClassName, and cloneNode" {
+    const allocator = std.testing.allocator;
+    const table = try AtomTable.init(allocator);
+    defer table.deinit();
+
+    const root = try Node.create(allocator, .Element, try table.intern("div"));
+    defer root.deinit(allocator);
+
+    const p1 = try Node.create(allocator, .Element, try table.intern("p"));
+    try p1.setAttribute(allocator, try table.intern("id"), "main-para");
+    try p1.setAttribute(allocator, try table.intern("class"), "text-lead highlight");
+    try root.appendChild(allocator, p1);
+
+    const p2 = try Node.create(allocator, .Element, try table.intern("p"));
+    try p2.setAttribute(allocator, try table.intern("class"), "highlight secondary");
+    try root.appendChild(allocator, p2);
+
+    // Test querySelector
+    const found_id = root.querySelector(table, "#main-para");
+    try std.testing.expect(found_id == p1);
+
+    const found_class = root.querySelector(table, ".text-lead");
+    try std.testing.expect(found_class == p1);
+
+    const found_tag = root.querySelector(table, "p");
+    try std.testing.expect(found_tag == p1);
+
+    // Test getElementsByTagName
+    var p_list = try root.getElementsByTagName(allocator, table, "p");
+    defer p_list.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), p_list.items.len);
+
+    // Test getElementsByClassName
+    var hl_list = try root.getElementsByClassName(allocator, table, "highlight");
+    defer hl_list.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), hl_list.items.len);
+
+    // Test hasAttribute and removeAttribute
+    const id_atom = try table.intern("id");
+    try std.testing.expect(p1.hasAttribute(id_atom));
+    _ = p1.removeAttribute(allocator, id_atom);
+    try std.testing.expect(!p1.hasAttribute(id_atom));
+
+    // Test cloneNode deep
+    const clone = try root.cloneNode(allocator, true);
+    defer clone.deinit(allocator);
+    try std.testing.expect(clone.first_child != null);
+    try std.testing.expect(clone.first_child.?.next_sibling != null);
 }
