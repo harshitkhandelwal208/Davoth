@@ -103,6 +103,8 @@ pub const webapis = struct {
     pub const indexeddb = @import("webapis/indexeddb.zig");
     pub const worker = @import("webapis/worker.zig");
     pub const media = @import("webapis/media.zig");
+    pub const abort = @import("webapis/abort.zig");
+    pub const form_data = @import("webapis/form_data.zig");
 };
 
 pub const media = struct {
@@ -223,5 +225,7 @@ test "subsystem full verification" {
     _ = @import("ui/session_restore.zig");
     _ = @import("storage/sessions.zig");
     _ = @import("js/builtins.zig");
+    _ = @import("webapis/abort.zig");
+    _ = @import("webapis/form_data.zig");
     _ = @import("js/promise.zig");
 }

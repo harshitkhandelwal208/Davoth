@@ -24,6 +24,7 @@ pub const StyleEngine = struct {
     atom_table: *AtomTable,
     ua_stylesheet: StyleSheet,
     author_stylesheets: std.ArrayList(StyleSheet),
+    custom_properties: std.StringHashMap([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, atom_table: *AtomTable) !*StyleEngine {
         const engine = try allocator.create(StyleEngine);
@@ -46,6 +47,7 @@ pub const StyleEngine = struct {
             .atom_table = atom_table,
             .ua_stylesheet = ua_sheet,
             .author_stylesheets = .empty,
+            .custom_properties = std.StringHashMap([]const u8).init(allocator),
         };
         return engine;
     }
@@ -56,7 +58,49 @@ pub const StyleEngine = struct {
             sheet.deinit();
         }
         self.author_stylesheets.deinit(self.allocator);
+
+        var it = self.custom_properties.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.custom_properties.deinit();
+
         self.allocator.destroy(self);
+    }
+
+    pub fn setCustomProperty(self: *StyleEngine, name: []const u8, value: []const u8) !void {
+        if (self.custom_properties.getEntry(name)) |entry| {
+            self.allocator.free(entry.value_ptr.*);
+            entry.value_ptr.* = try self.allocator.dupe(u8, value);
+            return;
+        }
+        const k = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(k);
+        const v = try self.allocator.dupe(u8, value);
+        try self.custom_properties.put(k, v);
+    }
+
+    pub fn resolveVar(self: *StyleEngine, val: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, val, " \t\r\n");
+        if (std.mem.startsWith(u8, trimmed, "var(") and std.mem.endsWith(u8, trimmed, ")")) {
+            const inner = trimmed[4 .. trimmed.len - 1];
+            if (std.mem.indexOfScalar(u8, inner, ',')) |comma| {
+                const var_name = std.mem.trim(u8, inner[0..comma], " \t\r\n");
+                const fallback = std.mem.trim(u8, inner[comma + 1 ..], " \t\r\n");
+                if (self.custom_properties.get(var_name)) |resolved| {
+                    return resolved;
+                }
+                return fallback;
+            } else {
+                const var_name = std.mem.trim(u8, inner, " \t\r\n");
+                if (self.custom_properties.get(var_name)) |resolved| {
+                    return resolved;
+                }
+                return "";
+            }
+        }
+        return trimmed;
     }
 
     pub fn addAuthorStylesheet(self: *StyleEngine, css: []const u8) !void {
@@ -137,8 +181,18 @@ pub const StyleEngine = struct {
         return style;
     }
 
-    fn applyDeclaration(self: *StyleEngine, style: *ComputedStyle, prop: AtomId, val: []const u8) !void {
+    fn applyDeclaration(self: *StyleEngine, style: *ComputedStyle, prop: AtomId, raw_val: []const u8) !void {
         const name = self.atom_table.get(prop);
+
+        // Custom property definition (--variable-name: value)
+        if (std.mem.startsWith(u8, name, "--")) {
+            try self.setCustomProperty(name, raw_val);
+            return;
+        }
+
+        // Variable substitution (var(--variable-name, fallback))
+        const val = self.resolveVar(raw_val);
+        if (val.len == 0) return;
 
         if (std.mem.eql(u8, name, "display")) {
             if (std.mem.eql(u8, val, "block")) style.display = .Block;
@@ -270,4 +324,36 @@ test "style engine compute style with cascade" {
     try std.testing.expectEqual(Display.Block, computed.display); // from UA
     try std.testing.expectEqual(@as(u8, 255), computed.background_color.b); // #0000ff
     try std.testing.expectEqual(@as(f32, 300.0), computed.width.value);
+}
+
+test "style engine css custom properties and var resolution" {
+    const allocator = std.testing.allocator;
+    const table = try AtomTable.init(allocator);
+    defer table.deinit();
+
+    const engine = try StyleEngine.init(allocator, table);
+    defer engine.deinit();
+
+    try engine.addAuthorStylesheet(
+        \\div.theme-card {
+        \\  --theme-bg: #123456;
+        \\  --theme-pad: 20px;
+        \\  background-color: var(--theme-bg);
+        \\  padding: var(--theme-pad);
+        \\  color: var(--missing-color, #ffffff);
+        \\}
+    );
+
+    const node = try Node.create(allocator, .Element, try table.intern("div"));
+    defer node.deinit(allocator);
+    try node.setAttribute(allocator, try table.intern("class"), "theme-card");
+
+    const computed = try engine.computeStyle(node, null);
+    try std.testing.expectEqual(@as(u8, 0x12), computed.background_color.r);
+    try std.testing.expectEqual(@as(u8, 0x34), computed.background_color.g);
+    try std.testing.expectEqual(@as(u8, 0x56), computed.background_color.b);
+    try std.testing.expectEqual(@as(f32, 20.0), computed.padding.top.value);
+    try std.testing.expectEqual(@as(u8, 255), computed.color.r); // fallback #ffffff
+    try std.testing.expectEqual(@as(u8, 255), computed.color.g);
+    try std.testing.expectEqual(@as(u8, 255), computed.color.b);
 }

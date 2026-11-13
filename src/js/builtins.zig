@@ -205,6 +205,29 @@ pub fn initBuiltins(vm: *VM) !void {
 
     const url_fn = try vm.gc.allocateFunction(null, nativeUrlConstructor, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("URL"), JSValue.fromObject(url_fn));
+
+    // AbortController & AbortSignal Web APIs
+    const abort_ctrl_fn = try vm.gc.allocateFunction(null, nativeAbortControllerConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("AbortController"), JSValue.fromObject(abort_ctrl_fn));
+
+    const abort_sig_fn = try vm.gc.allocateFunction(null, nativeAbortSignalConstructor, @ptrCast(vm));
+    const sig_abort_static = try vm.gc.allocateFunction(null, nativeAbortSignalStaticAbort, @ptrCast(vm));
+    try abort_sig_fn.setProperty(alloc, try table.intern("abort"), JSValue.fromObject(sig_abort_static));
+    const sig_timeout_static = try vm.gc.allocateFunction(null, nativeAbortSignalStaticTimeout, @ptrCast(vm));
+    try abort_sig_fn.setProperty(alloc, try table.intern("timeout"), JSValue.fromObject(sig_timeout_static));
+    try global.setProperty(alloc, try table.intern("AbortSignal"), JSValue.fromObject(abort_sig_fn));
+
+    // FormData Web API
+    const form_data_fn = try vm.gc.allocateFunction(null, nativeFormDataConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("FormData"), JSValue.fromObject(form_data_fn));
+
+    // WebSocket Web API
+    const ws_fn = try vm.gc.allocateFunction(null, nativeWebSocketConstructor, @ptrCast(vm));
+    try ws_fn.setProperty(alloc, try table.intern("CONNECTING"), JSValue.fromInt32(0));
+    try ws_fn.setProperty(alloc, try table.intern("OPEN"), JSValue.fromInt32(1));
+    try ws_fn.setProperty(alloc, try table.intern("CLOSING"), JSValue.fromInt32(2));
+    try ws_fn.setProperty(alloc, try table.intern("CLOSED"), JSValue.fromInt32(3));
+    try global.setProperty(alloc, try table.intern("WebSocket"), JSValue.fromObject(ws_fn));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -1308,6 +1331,139 @@ fn nativeUrlToString(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) any
     return obj.getProperty(href_atom) orelse JSValue.undefined_val;
 }
 
+// AbortSignal and AbortController Web APIs
+fn nativeAbortSignalConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("aborted"), JSValue.false_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("reason"), JSValue.undefined_val);
+
+    const abort_fn = try vm.gc.allocateFunction(null, nativeAbortSignalAbortMethod, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_abortInternal"), JSValue.fromObject(abort_fn));
+
+    return JSValue.fromObject(inst);
+}
+
+fn nativeAbortSignalAbortMethod(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("aborted"), JSValue.true_val);
+    if (args.len > 0) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("reason"), args[0]);
+    } else {
+        const def_reason = try vm.atom_table.intern("AbortError");
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("reason"), JSValue.fromStringAtom(def_reason));
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeAbortControllerConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+
+    const sig_val = try nativeAbortSignalConstructor(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{});
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("signal"), sig_val);
+
+    const abort_fn = try vm.gc.allocateFunction(null, nativeAbortControllerAbort, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("abort"), JSValue.fromObject(abort_fn));
+
+    return JSValue.fromObject(inst);
+}
+
+fn nativeAbortControllerAbort(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const sig_atom = try vm.atom_table.intern("signal");
+    const sig_val = inst.getProperty(sig_atom) orelse return JSValue.undefined_val;
+    _ = try nativeAbortSignalAbortMethod(ctx, sig_val, args);
+    return JSValue.undefined_val;
+}
+
+fn nativeAbortSignalStaticAbort(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const sig_val = try nativeAbortSignalConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+    _ = try nativeAbortSignalAbortMethod(ctx, sig_val, args);
+    return sig_val;
+}
+
+fn nativeAbortSignalStaticTimeout(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    _ = args;
+    return nativeAbortSignalConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+}
+
+// FormData Web API
+fn nativeFormDataConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+
+    const keys_arr = try createArray(vm, &[_]JSValue{});
+    const vals_arr = try createArray(vm, &[_]JSValue{});
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_keys"), JSValue.fromObject(keys_arr));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_values"), JSValue.fromObject(vals_arr));
+
+    const append_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsAppend, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("append"), JSValue.fromObject(append_fn));
+
+    const get_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsGet, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("get"), JSValue.fromObject(get_fn));
+
+    const get_all_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsGetAll, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getAll"), JSValue.fromObject(get_all_fn));
+
+    const has_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsHas, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("has"), JSValue.fromObject(has_fn));
+
+    const set_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsSet, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("set"), JSValue.fromObject(set_fn));
+
+    const delete_fn = try vm.gc.allocateFunction(null, nativeUrlSearchParamsDelete, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("delete"), JSValue.fromObject(delete_fn));
+
+    return JSValue.fromObject(inst);
+}
+
+// WebSocket Web API
+fn nativeWebSocketConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+
+    const url_str = if (args.len > 0 and args[0].isString())
+        vm.atom_table.get(args[0].toStringAtom())
+    else
+        "ws://localhost";
+    const url_atom = try vm.atom_table.intern(url_str);
+
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("url"), JSValue.fromStringAtom(url_atom));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("readyState"), JSValue.fromInt32(1)); // OPEN
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("bufferedAmount"), JSValue.fromInt32(0));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("protocol"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("extensions"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+
+    // ReadyState constants
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("CONNECTING"), JSValue.fromInt32(0));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("OPEN"), JSValue.fromInt32(1));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("CLOSING"), JSValue.fromInt32(2));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("CLOSED"), JSValue.fromInt32(3));
+
+    const send_fn = try vm.gc.allocateFunction(null, nativeWebSocketSend, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("send"), JSValue.fromObject(send_fn));
+
+    const close_fn = try vm.gc.allocateFunction(null, nativeWebSocketClose, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("close"), JSValue.fromObject(close_fn));
+
+    return JSValue.fromObject(inst);
+}
+
+fn nativeWebSocketSend(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeWebSocketClose(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("readyState"), JSValue.fromInt32(3)); // CLOSED
+    return JSValue.undefined_val;
+}
+
 test "builtins installation and execution" {
     const allocator = std.testing.allocator;
     const atom_table = try AtomTable.init(allocator);
@@ -1690,4 +1846,76 @@ test "whatwg url and urlsearchparams in javascript engine" {
     const eval_res2 = try vm.execute(&code2);
     try std.testing.expect(eval_res2.isString());
     try std.testing.expectEqualStrings("web", atom_table.get(eval_res2.toStringAtom()));
+}
+
+test "abortcontroller formdata and websocket in javascript engine" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. AbortController in VM bytecode
+    const script_abort =
+        \\let controller = new AbortController();
+        \\let sig = controller.signal;
+        \\controller.abort("User cancelled request");
+        \\return sig.aborted;
+    ;
+    var p_abort = Parser.init(allocator, script_abort);
+    const ast_abort = try p_abort.parseProgram();
+    defer ast_abort.deinit(allocator);
+
+    var c_abort = BytecodeCompiler.init(allocator, atom_table, "test_abort");
+    var code_abort = try c_abort.compile(ast_abort);
+    defer code_abort.deinit();
+
+    const res_abort = try vm.execute(&code_abort);
+    try std.testing.expect(res_abort.isBoolean());
+    try std.testing.expect(res_abort.toBoolean());
+
+    // 2. FormData in VM bytecode
+    const script_form =
+        \\let fd = new FormData();
+        \\fd.append("username", "davoth_tester");
+        \\fd.append("role", "developer");
+        \\return fd.get("username");
+    ;
+    var p_form = Parser.init(allocator, script_form);
+    const ast_form = try p_form.parseProgram();
+    defer ast_form.deinit(allocator);
+
+    var c_form = BytecodeCompiler.init(allocator, atom_table, "test_form");
+    var code_form = try c_form.compile(ast_form);
+    defer code_form.deinit();
+
+    const res_form = try vm.execute(&code_form);
+    try std.testing.expect(res_form.isString());
+    try std.testing.expectEqualStrings("davoth_tester", atom_table.get(res_form.toStringAtom()));
+
+    // 3. WebSocket in VM bytecode
+    const script_ws =
+        \\let ws = new WebSocket("wss://echo.websocket.events");
+        \\return ws.readyState;
+    ;
+    var p_ws = Parser.init(allocator, script_ws);
+    const ast_ws = try p_ws.parseProgram();
+    defer ast_ws.deinit(allocator);
+
+    var c_ws = BytecodeCompiler.init(allocator, atom_table, "test_ws");
+    var code_ws = try c_ws.compile(ast_ws);
+    defer code_ws.deinit();
+
+    const res_ws = try vm.execute(&code_ws);
+    try std.testing.expect(res_ws.isInt32());
+    try std.testing.expectEqual(@as(i32, 1), res_ws.toInt32()); // OPEN
 }

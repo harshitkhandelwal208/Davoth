@@ -24,6 +24,77 @@ pub const EventListener = struct {
     use_capture: bool = false,
 };
 
+pub const DOMTokenList = struct {
+    node: *Node,
+    table: *AtomTable,
+
+    pub fn value(self: DOMTokenList) []const u8 {
+        const class_atom = self.table.intern("class") catch return "";
+        return self.node.getAttribute(class_atom) orelse "";
+    }
+
+    pub fn contains(self: DOMTokenList, token: []const u8) bool {
+        const cur = self.value();
+        if (cur.len == 0) return false;
+        var it = std.mem.tokenizeScalar(u8, cur, ' ');
+        while (it.next()) |item| {
+            if (std.mem.eql(u8, item, token)) return true;
+        }
+        return false;
+    }
+
+    pub fn add(self: DOMTokenList, allocator: std.mem.Allocator, token: []const u8) !void {
+        if (self.contains(token)) return;
+        const cur = self.value();
+        const class_atom = try self.table.intern("class");
+        if (cur.len == 0) {
+            try self.node.setAttribute(allocator, class_atom, token);
+        } else {
+            const joined = try std.fmt.allocPrint(allocator, "{s} {s}", .{ cur, token });
+            defer allocator.free(joined);
+            try self.node.setAttribute(allocator, class_atom, joined);
+        }
+    }
+
+    pub fn remove(self: DOMTokenList, allocator: std.mem.Allocator, token: []const u8) !void {
+        if (!self.contains(token)) return;
+        const cur = self.value();
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(allocator);
+
+        var it = std.mem.tokenizeScalar(u8, cur, ' ');
+        while (it.next()) |item| {
+            if (std.mem.eql(u8, item, token)) continue;
+            if (out.items.len > 0) try out.append(allocator, ' ');
+            try out.appendSlice(allocator, item);
+        }
+
+        const class_atom = try self.table.intern("class");
+        if (out.items.len == 0) {
+            _ = self.node.removeAttribute(allocator, class_atom);
+        } else {
+            try self.node.setAttribute(allocator, class_atom, out.items);
+        }
+    }
+
+    pub fn toggle(self: DOMTokenList, allocator: std.mem.Allocator, token: []const u8) !bool {
+        if (self.contains(token)) {
+            try self.remove(allocator, token);
+            return false;
+        } else {
+            try self.add(allocator, token);
+            return true;
+        }
+    }
+
+    pub fn replace(self: DOMTokenList, allocator: std.mem.Allocator, old_token: []const u8, new_token: []const u8) !bool {
+        if (!self.contains(old_token)) return false;
+        try self.remove(allocator, old_token);
+        try self.add(allocator, new_token);
+        return true;
+    }
+};
+
 pub const Node = struct {
     node_type: NodeType,
     tag_name: AtomId = AtomId.empty,
@@ -263,6 +334,32 @@ pub const Node = struct {
 
     pub fn hasAttribute(self: *const Node, name: AtomId) bool {
         return self.getAttribute(name) != null;
+    }
+
+    // WHATWG classList (DOMTokenList)
+    pub fn classList(self: *Node, table: *AtomTable) DOMTokenList {
+        return .{ .node = self, .table = table };
+    }
+
+    // WHATWG dataset (data-* attributes)
+    pub fn getDataset(self: *const Node, table: *AtomTable, key: []const u8) ?[]const u8 {
+        var buf: [128]u8 = undefined;
+        const attr_name = if (std.mem.startsWith(u8, key, "data-"))
+            key
+        else
+            std.fmt.bufPrint(&buf, "data-{s}", .{key}) catch return null;
+        const attr_atom = table.intern(attr_name) catch return null;
+        return self.getAttribute(attr_atom);
+    }
+
+    pub fn setDataset(self: *Node, allocator: std.mem.Allocator, table: *AtomTable, key: []const u8, val: []const u8) !void {
+        var buf: [128]u8 = undefined;
+        const attr_name = if (std.mem.startsWith(u8, key, "data-"))
+            key
+        else
+            try std.fmt.bufPrint(&buf, "data-{s}", .{key});
+        const attr_atom = try table.intern(attr_name);
+        try self.setAttribute(allocator, attr_atom, val);
     }
 
     // WHATWG Element Traversal
@@ -698,4 +795,54 @@ test "node element traversal matches and closest" {
 
     const closest_nonexistent = button.closest(table, "article");
     try std.testing.expect(closest_nonexistent == null);
+}
+
+test "node classlist and dataset" {
+    const allocator = std.testing.allocator;
+    const table = try AtomTable.init(allocator);
+    defer table.deinit();
+
+    const el = try Node.create(allocator, .Element, try table.intern("div"));
+    defer el.deinit(allocator);
+
+    var cl = el.classList(table);
+
+    // 1. Initial state
+    try std.testing.expectEqualStrings("", cl.value());
+    try std.testing.expect(!cl.contains("active"));
+
+    // 2. Add classes
+    try cl.add(allocator, "btn");
+    try cl.add(allocator, "primary");
+    try std.testing.expect(cl.contains("btn"));
+    try std.testing.expect(cl.contains("primary"));
+    try std.testing.expectEqualStrings("btn primary", cl.value());
+
+    // 3. Toggle
+    const toggled_off = try cl.toggle(allocator, "primary");
+    try std.testing.expect(!toggled_off);
+    try std.testing.expect(!cl.contains("primary"));
+
+    const toggled_on = try cl.toggle(allocator, "primary");
+    try std.testing.expect(toggled_on);
+    try std.testing.expect(cl.contains("primary"));
+
+    // 4. Replace
+    const replaced = try cl.replace(allocator, "primary", "danger");
+    try std.testing.expect(replaced);
+    try std.testing.expect(!cl.contains("primary"));
+    try std.testing.expect(cl.contains("danger"));
+
+    // 5. Remove
+    try cl.remove(allocator, "danger");
+    try std.testing.expect(!cl.contains("danger"));
+    try std.testing.expect(cl.contains("btn"));
+
+    // 6. Dataset
+    try el.setDataset(allocator, table, "action", "submit");
+    try el.setDataset(allocator, table, "data-user-id", "42");
+    try std.testing.expectEqualStrings("submit", el.getDataset(table, "action").?);
+    try std.testing.expectEqualStrings("submit", el.getDataset(table, "data-action").?);
+    try std.testing.expectEqualStrings("42", el.getDataset(table, "user-id").?);
+    try std.testing.expect(el.getDataset(table, "missing") == null);
 }
