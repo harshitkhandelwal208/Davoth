@@ -98,6 +98,26 @@ pub const GtkApp = struct {
 
                 _ = c.g_signal_connect_data(url_entry, "activate", @ptrCast(&entry_activate_cb.onActivate), ctx, null, 0);
 
+                // Key controller for Vim modal navigation
+                const key_controller = c.gtk_event_controller_key_new();
+                if (key_controller) |kc| {
+                    const key_pressed_cb = struct {
+                        fn onKeyPressed(_: ?*anyopaque, keyval: c_uint, _: c_uint, _: c_uint, udata: ?*anyopaque) callconv(.c) c_int {
+                            const kctx: *AppContext = @ptrCast(@alignCast(udata.?));
+                            if (keyval < 128) {
+                                const key: u8 = @intCast(keyval);
+                                _ = kctx.shell.handleVimKey(key) catch {};
+                                if (kctx.drawing_area) |da| {
+                                    c.gtk_widget_queue_draw(da);
+                                }
+                            }
+                            return 0;
+                        }
+                    };
+                    _ = c.g_signal_connect_data(kc, "key-pressed", @ptrCast(&key_pressed_cb.onKeyPressed), ctx, null, 0);
+                    c.gtk_widget_add_controller(@ptrCast(window), kc);
+                }
+
                 // Initial navigation to about:home
                 ctx.shell.navigate("about:home") catch {};
 

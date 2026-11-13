@@ -24,6 +24,10 @@ const JSValue = @import("../js/value.zig").JSValue;
 const Parser = @import("../js/parser.zig").Parser;
 const BytecodeCompiler = @import("../js/bytecode.zig").BytecodeCompiler;
 const JITCompiler = @import("../js/jit.zig").JITCompiler;
+const VimController = @import("vim.zig").VimController;
+const VimAction = @import("vim.zig").VimAction;
+const detectLoginForm = @import("../components/bitwarden/autofill.zig").detectLoginForm;
+const autofillForm = @import("../components/bitwarden/autofill.zig").autofillForm;
 
 pub const BrowserShell = struct {
     allocator: std.mem.Allocator,
@@ -39,6 +43,9 @@ pub const BrowserShell = struct {
     gc: *GarbageCollector,
     vm: *VM,
     jit: ?*JITCompiler,
+    vim_controller: VimController,
+    current_doc: ?*Node = null,
+    current_layout: ?*LayoutBox = null,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) !*BrowserShell {
         const shell = try allocator.create(BrowserShell);
@@ -66,6 +73,9 @@ pub const BrowserShell = struct {
             .gc = gc,
             .vm = vm,
             .jit = jit,
+            .vim_controller = VimController.init(allocator),
+            .current_doc = null,
+            .current_layout = null,
         };
         shell.compositor = Compositor.init(shell.rasterizer.backend());
 
@@ -75,6 +85,9 @@ pub const BrowserShell = struct {
     }
 
     pub fn deinit(self: *BrowserShell) void {
+        if (self.current_layout) |l| l.deinit(self.allocator);
+        if (self.current_doc) |d| d.deinit(self.allocator);
+        self.vim_controller.deinit();
         if (self.jit) |j| {
             j.deinit();
             self.allocator.destroy(j);
@@ -138,8 +151,8 @@ pub const BrowserShell = struct {
         const url = try UrlBar.parseInput(self.allocator, input_url, .DuckDuckGo);
         defer self.allocator.free(url);
 
-        // Check WebRequest blocking
-        const intercept = self.extension_manager.web_request.interceptRequest(url);
+        // Check WebRequest blocking with AdNauseam recording
+        const intercept = self.extension_manager.interceptUrl(url, "main_frame");
         if (intercept.cancel) {
             std.debug.print("Navigation blocked by WebRequest extension policy: {s}\n", .{url});
             return;
@@ -160,6 +173,8 @@ pub const BrowserShell = struct {
                 \\    <div style="background-color: #1e1e2e; color: #ffffff; padding: 40px; margin: 20px;">
                 \\      <h1>Davoth Browser</h1>
                 \\      <p>Independent, secure, memory-efficient browser built from scratch in Zig 0.17.1</p>
+                \\      <a href="https://davoth.org/docs">Documentation</a>
+                \\      <form action="/login"><input type="email" placeholder="Email"><input type="password" placeholder="Password"><button type="submit">Sign In</button></form>
                 \\    </div>
                 \\    <script>let status = "Davoth Engine Active";</script>
                 \\  </body>
@@ -181,7 +196,18 @@ pub const BrowserShell = struct {
         defer builder.deinit();
 
         const doc = try builder.parse();
-        defer doc.deinit(self.allocator);
+
+        // Check Bitwarden Autofill if vault is unlocked
+        if (self.vault.is_unlocked) {
+            var logins = self.vault.findLoginsForHost(self.allocator, effective_url) catch null;
+            if (logins) |*list| {
+                defer list.deinit(self.allocator);
+                if (list.items.len > 0 and list.items[0].login != null) {
+                    const form = detectLoginForm(doc, self.atom_table);
+                    _ = autofillForm(self.allocator, form, list.items[0].login.?, self.atom_table) catch {};
+                }
+            }
+        }
 
         // Execute inline script tags
         self.executeInlineScripts(doc);
@@ -192,8 +218,6 @@ pub const BrowserShell = struct {
         // Build layout tree
         const layout_root_opt = try buildLayoutTree(self.allocator, doc, self.style_engine, null);
         if (layout_root_opt) |layout_root| {
-            defer layout_root.deinit(self.allocator);
-
             // Reflow
             performLayout(layout_root, @floatFromInt(self.rasterizer.width), @floatFromInt(self.rasterizer.height));
 
@@ -205,7 +229,22 @@ pub const BrowserShell = struct {
 
             // Composite
             self.compositor.composite(&dlist, null);
+
+            // Configure Vim navigation scroll bounds and link hints
+            self.vim_controller.setScrollBounds(@floatFromInt(self.rasterizer.height), @floatFromInt(self.rasterizer.width), @floatFromInt(self.rasterizer.height));
+            self.vim_controller.generateHints(doc, layout_root, self.atom_table) catch {};
+
+            if (self.current_layout) |l| l.deinit(self.allocator);
+            self.current_layout = layout_root;
+        } else {
+            if (self.current_layout) |l| {
+                l.deinit(self.allocator);
+                self.current_layout = null;
+            }
         }
+
+        if (self.current_doc) |d| d.deinit(self.allocator);
+        self.current_doc = doc;
 
         // Update active tab URL
         if (self.tab_manager.activeTab()) |tab| {
@@ -215,6 +254,60 @@ pub const BrowserShell = struct {
 
         // Record history
         try self.history_store.addVisit(effective_url, "Web Page");
+    }
+
+    pub fn handleVimKey(self: *BrowserShell, key: u8) !?VimAction {
+        const act = self.vim_controller.handleKey(key);
+        if (act) |a| {
+            switch (a) {
+                .ScrollDown, .ScrollUp, .HalfPageDown, .HalfPageUp, .ScrollTop, .ScrollBottom => {
+                    if (self.tab_manager.activeTab()) |tab| {
+                        tab.scroll_y = self.vim_controller.scroll_offset_y;
+                    }
+                },
+                .NewTab => |opt_url| {
+                    const target = opt_url orelse "about:home";
+                    _ = try self.tab_manager.newTab(target, "New Tab", .Default);
+                    try self.navigate(target);
+                },
+                .CloseTab => {
+                    if (self.tab_manager.tabs.items.len > 1) {
+                        self.tab_manager.closeTab(self.tab_manager.active_index);
+                        if (self.tab_manager.activeTab()) |t| {
+                            try self.navigate(t.url);
+                        }
+                    }
+                },
+                .ActivateTab => |idx| {
+                    if (self.tab_manager.activateTab(idx)) {
+                        if (self.tab_manager.activeTab()) |t| {
+                            try self.navigate(t.url);
+                        }
+                    }
+                },
+                .Reload => {
+                    if (self.tab_manager.activeTab()) |t| {
+                        try self.navigate(t.url);
+                    }
+                },
+                .FollowHint => |data| {
+                    if (data.target_url) |u| {
+                        if (data.new_tab) {
+                            _ = try self.tab_manager.newTab(u, "New Tab", .Default);
+                        } else {
+                            try self.navigate(u);
+                        }
+                    }
+                },
+                .ExecuteCommand => |cmd| {
+                    if (std.mem.startsWith(u8, cmd, "http://") or std.mem.startsWith(u8, cmd, "https://") or std.mem.startsWith(u8, cmd, "about:") or std.mem.startsWith(u8, cmd, "file://")) {
+                        try self.navigate(cmd);
+                    }
+                },
+                else => {},
+            }
+        }
+        return act;
     }
 };
 
