@@ -152,6 +152,7 @@ pub const ui = struct {
     pub const shell = @import("ui/shell.zig");
     pub const gtk_app = @import("ui/gtk_app.zig");
     pub const downloads_panel = @import("ui/downloads_panel.zig");
+    pub const containers_ui = @import("ui/containers_ui.zig");
 };
 
 pub const extensions = struct {
@@ -206,4 +207,5 @@ test "subsystem full verification" {
     _ = @import("dom/node.zig");
     _ = @import("ui/tabs.zig");
     _ = @import("ui/shell.zig");
+    _ = @import("ui/containers_ui.zig");
 }
