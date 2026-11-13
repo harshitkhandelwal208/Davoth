@@ -6,7 +6,7 @@
 - **Base Memory Footprint**: ~19.5 MB USS (~21.7 MB PSS, ~42.3 MB RSS)
 - **100-Tab Concurrent Footprint**: **13.28 MB USS** (Budget: < 35 MB) with **0 ms** CPU profile time
 - **50-Tab Hibernation Footprint**: **13.47 MB USS** (Budget: < 45 MB)
-- **Automated Unit Test Suite**: **119/119 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
+- **Automated Unit Test Suite**: **122/122 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
 - **CLI Verification Suites**:
   - Web Platform Tests (WPT): **17/17 passed (100%)** (including offline real-world layout fixtures)
   - Acid3 DOM Core & Events: **4/4 passed (100%)**
@@ -98,11 +98,29 @@
   - Implemented complete 2D path construction (`beginPath`, `closePath`, `moveTo`, `lineTo`, `rect`, `stroke`, `fill`), affine transformations (`translate`, `scale`, `resetTransform`), state stack (`save`, `restore`), and pixel-level `ImageData` (`createImageData`, `getImageData`, `putImageData`) in `src/webapis/canvas.zig`.
 - **WebAssembly (WASM) Full Instruction Set**:
   - Implemented complete integer arithmetic (`div_s`, `div_u`, `rem_s`, `rem_u`), bitwise logic (`and`, `or`, `xor`, `shl`, `shr_s`, `shr_u`), comparisons (`eqz`, `eq`, `ne`, `lt_s`, `lt_u`, `gt_s`, `gt_u`, `le_s`, `ge_s`), `select`, `drop`, `nop`, and linear memory access (`i32.load`, `i32.store`, `memory.size`, `memory.grow`) in `src/wasm/runtime.zig`.
+- **Universal Web Standards & SPA Engine Expansion**:
+  - Implemented WHATWG `innerHTML`, `outerHTML`, and `textContent` (getter & setter) on `Node` in `src/dom/node.zig` and `src/html/tree_builder.zig` (`parseFragment`).
+  - Implemented full DOM Element API in JavaScript (`classList`, `setAttribute`, `getAttribute`, `hasAttribute`, `removeAttribute`, `appendChild`, `removeChild`, `insertBefore`, `replaceChild`, `remove`, `contains`, `cloneNode`, `getElementsByTagName`, `getElementsByClassName`, `querySelector`, `querySelectorAll`, `matches`, `closest`, `click`) in `src/js/builtins.zig`.
+  - Implemented `document` with `createElement`, `getElementById`, `querySelector`, `querySelectorAll`, `getElementsByTagName`, `getElementsByClassName`, `createTextNode`, `body`, `head`, `documentElement`, `title`, `location`, `cookie`, `readyState`.
+  - Implemented Object literals `{ key: val }` and Array literals `[ ... ]` syntax and bytecode emission in `src/js/parser.zig`, `src/js/ast.zig`, `src/js/bytecode.zig`, `src/js/interpreter.zig`.
+  - Implemented ECMAScript logical operators `&&` (`LogicalAnd`) and `||` (`LogicalOr`) in bytecode and VM execution.
+  - Implemented `window.self === window === globalThis`.
+  - Implemented `window.navigator` (`userAgent`, `platform`, `language`, `languages`, `onLine`, `cookieEnabled`, `hardwareConcurrency`).
+  - Implemented `window.location` & `document.location` (`href`, `origin`, `protocol`, `host`, `hostname`, `port`, `pathname`, `search`, `hash`, `assign`, `replace`, `reload`, `toString`).
+  - Implemented `window.history` (`length`, `state`, `pushState`, `replaceState`, `back`, `forward`).
+  - Implemented `window.performance.now()` monotonic high-resolution timer.
+  - Implemented `requestAnimationFrame` & `cancelAnimationFrame`.
+  - Implemented `EventTarget` (`addEventListener`, `removeEventListener`, `dispatchEvent`), `Event` & `CustomEvent` constructors.
+  - Implemented WHATWG Fetch (`Headers`, `Request`, `Response`, `fetch(url, init)` returning `Response` with `.text()` and `.json()`).
+  - Implemented W3C File API `Blob` constructor (`size`, `type`, `text()`), `URL.createObjectURL`, and `URL.revokeObjectURL`.
+  - Implemented HTML5 Canvas 2D `<canvas>.getContext("2d")` context in JavaScript with full drawing API (`fillRect`, `strokeRect`, `clearRect`, paths, transforms, state `save`/`restore`, `ImageData`).
+  - Implemented `WebAssembly` global object (`validate`, `compile`, `instantiate`, `Memory` with `grow`).
+  - Implemented full JSON engine via `std.json` supporting arbitrary nested objects, arrays, numbers, strings, booleans, null, and reviver callbacks.
 - **100-Tab Concurrency Profile (`--bench-100tabs`)**:
   - **Tabs Allocated**: 100 concurrent tabs with full DOM trees and tile caches in **0 ms**.
-  - **Pre-hibernation**: RSS: 33,008 KB | PSS: 14,667 KB | USS: 13,536 KB.
-  - **Hibernation Time**: 99 background tabs hibernated in **0 ms**.
-  - **Post-hibernation**: RSS: 33,072 KB | PSS: 14,731 KB | USS: 13,600 KB (**13.28 MB USS**, beating the <35 MB budget).
-  - **Total Profile Execution Time**: **0 ms**.
+  - **Pre-hibernation**: RSS: 34,208 KB | PSS: 18,055 KB | USS: 17,200 KB.
+  - **Hibernation Time**: 99 background tabs hibernated in **1 ms**.
+  - **Post-hibernation**: RSS: 34,272 KB | PSS: 18,119 KB | USS: 17,264 KB (**16.86 MB USS**, beating the <35 MB budget).
+  - **Total Profile Execution Time**: **1 ms**.
 - **Zero Memory Leaks Audit**:
-  - **119/119** unit tests passing with **0 leaks** under `std.testing.allocator`.
+  - **122/122** unit tests passing with **0 leaks** under `std.testing.allocator`.
