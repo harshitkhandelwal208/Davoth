@@ -93,6 +93,25 @@ pub const VM = struct {
         return self.executeWithLocals(code, local_slots);
     }
 
+    pub fn call(self: *VM, callee: JSValue, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+        if (callee.toObject()) |obj| {
+            if (obj.native_fn) |n_fn| {
+                return try n_fn(obj.native_ctx orelse @ptrCast(self), this_val, args);
+            } else if (obj.code_block) |cb_ptr| {
+                const target_code: *const CodeBlock = @ptrCast(@alignCast(cb_ptr));
+                const local_count = @max(target_code.local_names.items.len, args.len);
+                const locals_mem = try self.allocator.alloc(JSValue, local_count);
+                defer self.allocator.free(locals_mem);
+                @memset(locals_mem, JSValue.undefined_val);
+                for (args, 0..) |arg, a_idx| {
+                    locals_mem[a_idx] = arg;
+                }
+                return try self.executeWithLocals(target_code, locals_mem);
+            }
+        }
+        return JSValue.undefined_val;
+    }
+
     pub fn executeWithLocals(self: *VM, code: *const CodeBlock, locals: []JSValue) !JSValue {
         if (self.frame_count >= self.frames.len) return error.CallStackOverflow;
         self.frames[self.frame_count] = CallFrame{
@@ -278,6 +297,31 @@ pub const VM = struct {
                     fn_obj.code_block = fn_code;
                     try self.push(JSValue.fromObject(fn_obj));
                 },
+                .CreateObject => {
+                    const obj = try self.gc.allocateObject(null);
+                    try self.push(JSValue.fromObject(obj));
+                },
+                .CreateArray => {
+                    const count = std.mem.readInt(u16, instrs[frame.ip..][0..2], .little);
+                    frame.ip += 2;
+                    var arr_items = try self.allocator.alloc(JSValue, count);
+                    defer self.allocator.free(arr_items);
+                    var idx = count;
+                    while (idx > 0) : (idx -= 1) {
+                        arr_items[idx - 1] = self.pop();
+                    }
+                    const arr_obj = try self.gc.allocateObject(null);
+                    arr_obj.builtin_type = .Array;
+                    for (arr_items, 0..) |it, i| {
+                        var buf: [16]u8 = undefined;
+                        const idx_str = std.fmt.bufPrint(&buf, "{d}", .{i}) catch "0";
+                        const idx_atom = try self.atom_table.intern(idx_str);
+                        try arr_obj.setProperty(self.allocator, idx_atom, it);
+                    }
+                    const length_atom = try self.atom_table.intern("length");
+                    try arr_obj.setProperty(self.allocator, length_atom, JSValue.fromInt32(@intCast(count)));
+                    try self.push(JSValue.fromObject(arr_obj));
+                },
                 .Call => {
                     const arg_count = instrs[frame.ip];
                     frame.ip += 1;
@@ -292,27 +336,8 @@ pub const VM = struct {
                         args_buf[i - 1] = self.pop();
                     }
 
-                    if (callee.toObject()) |obj| {
-                        if (obj.native_fn) |n_fn| {
-                            const res = try n_fn(obj.native_ctx orelse @ptrCast(self), call_this, args_buf[0..arg_count]);
-                            try self.push(res);
-                        } else if (obj.code_block) |cb_ptr| {
-                            const target_code: *const CodeBlock = @ptrCast(@alignCast(cb_ptr));
-                            const local_count = @max(target_code.local_names.items.len, @as(usize, arg_count));
-                            const locals_mem = try self.allocator.alloc(JSValue, local_count);
-                            defer self.allocator.free(locals_mem);
-                            @memset(locals_mem, JSValue.undefined_val);
-                            for (args_buf[0..arg_count], 0..) |arg, a_idx| {
-                                locals_mem[a_idx] = arg;
-                            }
-                            const res = try self.executeWithLocals(target_code, locals_mem);
-                            try self.push(res);
-                        } else {
-                            try self.push(JSValue.undefined_val);
-                        }
-                    } else {
-                        try self.push(JSValue.undefined_val);
-                    }
+                    const res = try self.call(callee, call_this, args_buf[0..arg_count]);
+                    try self.push(res);
                 },
                 .Return => {
                     if (self.stack_top > 0) {

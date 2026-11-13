@@ -679,47 +679,36 @@ pub const Node = struct {
     }
 
     pub fn querySelector(self: *Node, table: *AtomTable, selector: []const u8) ?*Node {
-        const trimmed = std.mem.trim(u8, selector, " ");
+        const trimmed = std.mem.trim(u8, selector, " \t\r\n");
         if (trimmed.len == 0) return null;
 
-        if (trimmed[0] == '#') {
-            return self.getElementById(table, trimmed[1..]);
-        }
-
-        if (trimmed[0] == '.') {
-            const class_atom = table.intern("class") catch return null;
-            return self.findFirstClass(class_atom, trimmed[1..]);
-        }
-
-        const tag_atom = table.intern(trimmed) catch return null;
-        return self.findFirstTag(tag_atom);
-    }
-
-    fn findFirstTag(self: *Node, tag_atom: AtomId) ?*Node {
-        if (self.node_type == .Element and self.tag_name == tag_atom) return self;
         var curr = self.first_child;
         while (curr) |child| {
-            if (child.findFirstTag(tag_atom)) |f| return f;
+            if (child.matches(table, trimmed)) return child;
+            if (child.querySelector(table, trimmed)) |found| return found;
             curr = child.next_sibling;
         }
         return null;
     }
 
-    fn findFirstClass(self: *Node, class_atom: AtomId, target_class: []const u8) ?*Node {
-        if (self.node_type == .Element) {
-            if (self.getAttribute(class_atom)) |val| {
-                var it = std.mem.tokenizeScalar(u8, val, ' ');
-                while (it.next()) |token| {
-                    if (std.mem.eql(u8, token, target_class)) return self;
-                }
+    pub fn querySelectorAll(self: *Node, allocator: std.mem.Allocator, table: *AtomTable, selector: []const u8) !std.ArrayList(*Node) {
+        var results = std.ArrayList(*Node).empty;
+        const trimmed = std.mem.trim(u8, selector, " \t\r\n");
+        if (trimmed.len > 0) {
+            try self.collectBySelector(allocator, table, trimmed, &results);
+        }
+        return results;
+    }
+
+    fn collectBySelector(self: *Node, allocator: std.mem.Allocator, table: *AtomTable, selector: []const u8, results: *std.ArrayList(*Node)) !void {
+        var curr = self.first_child;
+        while (curr) |child| {
+            if (child.matches(table, selector)) {
+                try results.append(allocator, child);
             }
-        }
-        var curr = self.first_child;
-        while (curr) |child| {
-            if (child.findFirstClass(class_atom, target_class)) |f| return f;
+            try child.collectBySelector(allocator, table, selector, results);
             curr = child.next_sibling;
         }
-        return null;
     }
 
     pub fn cloneNode(self: *const Node, allocator: std.mem.Allocator, deep: bool) !*Node {
@@ -808,6 +797,13 @@ test "dom node querySelector, getElementsByTagName, getElementsByClassName, and 
 
     const found_tag = root.querySelector(table, "p");
     try std.testing.expect(found_tag == p1);
+
+    // Test querySelectorAll
+    var qa_list = try root.querySelectorAll(allocator, table, "p.highlight");
+    defer qa_list.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), qa_list.items.len);
+    try std.testing.expectEqual(p1, qa_list.items[0]);
+    try std.testing.expectEqual(p2, qa_list.items[1]);
 
     // Test getElementsByTagName
     var p_list = try root.getElementsByTagName(allocator, table, "p");

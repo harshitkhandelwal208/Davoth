@@ -38,6 +38,8 @@ pub const OpCode = enum(u8) {
     Await = 29,
     Throw = 30,
     CreateFunction = 31,
+    CreateObject = 32,
+    CreateArray = 33,
 };
 
 pub const CodeBlock = struct {
@@ -253,6 +255,24 @@ pub const BytecodeCompiler = struct {
                 const atom = try self.atom_table.intern(m.property);
                 try self.code.emitOp(.GetProp);
                 try self.code.emitU16(@truncate(atom.toU32()));
+            },
+            .ArrayLiteral => |arr| {
+                for (arr) |elem| {
+                    try self.compileNode(elem);
+                }
+                try self.code.emitOp(.CreateArray);
+                try self.code.emitU16(@truncate(arr.len));
+            },
+            .ObjectLiteral => |props| {
+                try self.code.emitOp(.CreateObject);
+                for (props) |prop| {
+                    try self.code.emitOp(.Dup);
+                    try self.compileNode(prop.value);
+                    const atom = try self.atom_table.intern(prop.key);
+                    try self.code.emitOp(.SetProp);
+                    try self.code.emitU16(@truncate(atom.toU32()));
+                    try self.code.emitOp(.Pop);
+                }
             },
             .Block => |stmts| {
                 for (stmts) |stmt| {

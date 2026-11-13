@@ -26,6 +26,11 @@ pub const UnaryOperator = enum {
     Typeof,
 };
 
+pub const ObjectProperty = struct {
+    key: []const u8,
+    value: *Node,
+};
+
 pub const Node = struct {
     data: NodeData,
 
@@ -60,10 +65,7 @@ pub const Node = struct {
             computed: bool,
         },
         ArrayLiteral: []*Node,
-        ObjectLiteral: []struct {
-            key: []const u8,
-            value: *Node,
-        },
+        ObjectLiteral: []ObjectProperty,
         ArrowFunction: struct {
             params: [][]const u8,
             body: *Node,

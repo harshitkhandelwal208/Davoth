@@ -750,8 +750,62 @@ pub const Parser = struct {
             try self.consume(.RParen, "Expected ')'");
             return expr;
         }
+        if (self.match(.LBracket)) {
+            return self.parseArrayLiteral();
+        }
+        if (self.match(.LBrace)) {
+            return self.parseObjectLiteral();
+        }
 
         return error.UnexpectedToken;
+    }
+
+    fn parseArrayLiteral(self: *Parser) anyerror!*Node {
+        var elements: std.ArrayList(*Node) = .empty;
+        errdefer {
+            for (elements.items) |e| e.deinit(self.allocator);
+            elements.deinit(self.allocator);
+        }
+
+        while (self.current.token_type != .RBracket and self.current.token_type != .Eof) {
+            const expr = try self.parseExpression();
+            try elements.append(self.allocator, expr);
+            if (!self.match(.Comma)) break;
+        }
+        try self.consume(.RBracket, "Expected ']' after array elements");
+
+        const node = try self.allocator.create(Node);
+        node.* = .{ .data = .{ .ArrayLiteral = try elements.toOwnedSlice(self.allocator) } };
+        return node;
+    }
+
+    fn parseObjectLiteral(self: *Parser) anyerror!*Node {
+        const ObjectProperty = @import("ast.zig").ObjectProperty;
+        var props: std.ArrayList(ObjectProperty) = .empty;
+        errdefer {
+            for (props.items) |p| p.value.deinit(self.allocator);
+            props.deinit(self.allocator);
+        }
+
+        while (self.current.token_type != .RBrace and self.current.token_type != .Eof) {
+            var key: []const u8 = "";
+            if (self.match(.Identifier) or self.match(.String)) {
+                key = self.previous.lexeme;
+            } else {
+                return error.UnexpectedToken;
+            }
+
+            try self.consume(.Colon, "Expected ':' after property key in object literal");
+            const val = try self.parseExpression();
+            try props.append(self.allocator, .{ .key = key, .value = val });
+
+            if (!self.match(.Comma)) break;
+        }
+        try self.consume(.RBrace, "Expected '}' after object properties");
+
+        const node = try self.allocator.create(Node);
+        node.* = .{ .data = .{ .ObjectLiteral = try props.toOwnedSlice(self.allocator) } };
+        return node;
     }
 };
 
