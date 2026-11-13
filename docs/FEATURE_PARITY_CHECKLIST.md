@@ -127,7 +127,7 @@ This document tracks implementation status and conformance against official web 
 | :--- | :--- | :--- | :--- |
 | WHATWG HTML5 Tokenizer | State-machine based HTML streaming tokenizer | `src/html/tokenizer.zig` (`Tokenizer`) | **[x]** |
 | HTML5 Tree Builder | Insertion mode stack, table and formatting elements | `src/html/tree_builder.zig` (`TreeBuilder`) | **[x]** |
-| DOM Core Tree Model | Node, Element, Document, Text, Comment, `appendChild`, `insertBefore`, `replaceChild`, `removeChild`, `cloneNode`, `contains`, Element Traversal (`firstElementChild`, `lastElementChild`, `nextElementSibling`, `previousElementSibling`, `childElementCount`, `parentElement`), compound `matches(table, selector)`, `closest(table, selector)` | `src/dom/node.zig` (`Node`) | **[x]** |
+| DOM Core Tree Model | Node, Element, Document, Text, Comment, `appendChild`, `insertBefore`, `replaceChild`, `removeChild`, `cloneNode`, `contains`, Element Traversal (`firstElementChild`, `lastElementChild`, `nextElementSibling`, `previousElementSibling`, `childElementCount`, `parentElement`), compound `matches(table, selector)`, `closest(table, selector)`, WHATWG `classList` (`DOMTokenList` `add`, `remove`, `toggle`, `replace`, `contains`), WHATWG `dataset` (`data-*`) | `src/dom/node.zig` (`Node`, `DOMTokenList`) | **[x]** |
 | DOM Query Selectors | `querySelector`, `querySelectorAll`, `getElementsByTagName`, `getElementsByClassName` | `src/dom/node.zig` (`querySelector`, `querySelectorAll`) | **[x]** |
 | 3-Phase DOM Events | Capture, Target, Bubble event propagation with `stopPropagation`/`preventDefault` | `src/dom/events.zig` (`EventDispatcher.dispatchEvent`) | **[x]** |
 | DOM Mutation Observers | `childList`, `attributes`, `characterData` mutation tracking & queue | `src/dom/mutation.zig` (`MutationObserver`) | **[x]** |
@@ -140,7 +140,7 @@ This document tracks implementation status and conformance against official web 
 | :--- | :--- | :--- | :--- |
 | CSS3 Lexer & Parser | Tokenization, `@media`, `@keyframes`, rulesets, property declarations | `src/css/lexer.zig`, `src/css/parser.zig` (`Parser`) | **[x]** |
 | CSS Selectors & Specificity | Type, class, ID, attribute, pseudo-classes, combinators, `(a, b, c)` specificity tuple | `src/css/selector.zig` (`matchesSelector`, `calculateSpecificity`) | **[x]** |
-| Computed Style Resolution | Cascading, property inheritance, full color parser (`Color.parse` for hex, names, rgb, rgba), comprehensive property declarations (`box-sizing`, `border-color`, `border-width`, `align-items`, `flex-grow`, `flex-shrink`, `flex-basis`, `opacity`, `z-index`, `font-size`, `line-height`, `top/bottom/left/right`, `min/max-width/height`) | `src/css/style.zig`, `src/css/properties.zig` (`computeStyle`) | **[x]** |
+| Computed Style Resolution | Cascading, property inheritance, CSS Custom Properties (`--var: value;`), CSS variable substitution (`var(--var, fallback)`), full color parser (`Color.parse` for hex, names, rgb, rgba), comprehensive property declarations (`box-sizing`, `border-color`, `border-width`, `align-items`, `flex-grow`, `flex-shrink`, `flex-basis`, `opacity`, `z-index`, `font-size`, `line-height`, `top/bottom/left/right`, `min/max-width/height`) | `src/css/style.zig`, `src/css/properties.zig` (`computeStyle`) | **[x]** |
 | CSS Keyframe Animations | Newton-Raphson cubic-bezier solver (`ease`, `linear`, `ease-in`, `ease-out`, `ease-in-out`), `@keyframes` parser, keyframe property interpolator, animation clock | `src/css/animation.zig` (`CubicBezier`, `AnimationEngine`) | **[x]** |
 | Box Model & Block Layout | Margin, border, padding, content box, block/inline flow | `src/layout/box.zig`, `src/layout/block.zig` (`layoutBlock`) | **[x]** |
 | CSS Flexbox Engine | Flex direction, wrap, justify-content, align-items (`Center`, `FlexEnd`, `Stretch`), flex-grow/shrink/basis | `src/layout/flex.zig` (`layoutFlex`) | **[x]** |
@@ -158,7 +158,7 @@ This document tracks implementation status and conformance against official web 
 | Generational Garbage Collector | Nursery/mature spaces, root tracing, mark-and-sweep, native object tracking | `src/js/gc.zig` (`GarbageCollector`) | **[x]** |
 | ES2024 Array Helpers | `Array.prototype.toSorted`, `toReversed`, `with`, `toSpliced` | `src/js/builtins.zig` (`arrayToSorted`, `arrayToReversed`, `arrayWith`, `arrayToSpliced`) | **[x]** |
 | Object Reflection & Grouping | `Object.groupBy` (ES2024), `Object.keys`, `Object.values`, `Object.assign` | `src/js/builtins.zig` (`nativeObjectGroupBy`, `nativeObjectKeys`, etc.) | **[x]** |
-| Modern Web APIs | `URL`, `URLSearchParams`, `crypto.randomUUID` (RFC 4122 v4), `crypto.getRandomValues`, `btoa`, `atob`, `structuredClone`, `queueMicrotask`, `TextEncoder`, `TextDecoder` | `src/js/builtins.zig` | **[x]** |
+| Modern Web APIs | `URL`, `URLSearchParams`, `AbortController`, `AbortSignal` (`abort`, `timeout`), `FormData`, `WebSocket`, `crypto.randomUUID` (RFC 4122 v4), `crypto.getRandomValues`, `btoa`, `atob`, `structuredClone`, `queueMicrotask`, `TextEncoder`, `TextDecoder` | `src/js/builtins.zig`, `src/webapis/abort.zig`, `src/webapis/form_data.zig` | **[x]** |
 | Constructor 'new' & This Binding | AST prefix `new Callee(...)` parsing, bytecode stack `this` binding in `GetProp` and `Call` opcodes | `src/js/parser.zig`, `src/js/interpreter.zig` | **[x]** |
 | Promise Combinators | `Promise.withResolvers` (ES2024), `Promise.allSettled`, `Promise.any`, `Promise.all`, `Promise.race` | `src/js/builtins.zig`, `src/js/promise.zig` | **[x]** |
 | JSON Engine with Reviver | `JSON.parse` with recursive key/value reviver support, `JSON.stringify` | `src/js/builtins.zig` (`jsonParse`, `jsonStringify`) | **[x]** |
@@ -173,7 +173,7 @@ This document tracks implementation status and conformance against official web 
 | HTTP/1.1 Pipeline | Persistent keep-alive connection pooling, chunked transfer encoding, gzip decompression | `src/net/http1.zig` (`Http1Client`) | **[x]** |
 | HTTP/2 Multiplexing | Binary framing, stream multiplexing, HPACK header compression | `src/net/http2.zig` (`Http2Client`) | **[x]** |
 | HTTP/3 QUIC Demuxer | QUIC packet parser, header protection, variable-length integer decoding, stream demultiplexing | `src/net/http3.zig` (`QuicParser`) | **[x]** |
-| Full-Duplex WebSockets | RFC 6455 client, frame serialization/masking, Ping/Pong auto-reply, close handshake, fragmentation | `src/net/websocket.zig` (`WebSocketClient`) | **[x]** |
+| Full-Duplex WebSockets | RFC 6455 client, frame serialization/masking, Ping/Pong auto-reply, close handshake, fragmentation, and JavaScript `WebSocket` Web API | `src/net/websocket.zig` (`WebSocketClient`), `src/js/builtins.zig` (`WebSocket`) | **[x]** |
 | Cookie Partitioning | RFC 6265 cookies with container context isolation (Personal, Work, Banking, Shopping) | `src/net/cookies.zig` (`CookieJar`) | **[x]** |
 
 ---
@@ -192,5 +192,5 @@ This document tracks implementation status and conformance against official web 
 | Feature | Standards / Firefox Equivalent | Implementation in Davoth | Status |
 | :--- | :--- | :--- | :--- |
 | Size-Class Slab Allocator | Zero-fragmentation slab allocation with `madvise(MADV_DONTNEED)` idle page deflation | `src/common/memory.zig` (`SlabAllocator`) | **[x]** |
-| Sub-linear Tab Hibernation | Background tab freezing (>30s), tile cache shedding, DOM detachment, sub-linear memory scaling | `src/ui/tabs.zig` (`TabManager`), verified: **14.71 MB USS for 100 tabs** (< 35 MB budget) | **[x]** |
-| Leak-Free Memory Safety | Comprehensive heap safety with `std.testing.allocator` across all unit tests and stress loops | 111/111 unit tests passing with **0 leaks** | **[x]** |
+| Sub-linear Tab Hibernation | Background tab freezing (>30s), tile cache shedding, DOM detachment, sub-linear memory scaling | `src/ui/tabs.zig` (`TabManager`), verified: **13.28 MB USS for 100 tabs** (< 35 MB budget) | **[x]** |
+| Leak-Free Memory Safety | Comprehensive heap safety with `std.testing.allocator` across all unit tests and stress loops | 119/119 unit tests passing with **0 leaks** | **[x]** |
