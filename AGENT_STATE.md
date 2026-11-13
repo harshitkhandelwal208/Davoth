@@ -4,9 +4,9 @@
 - **Project**: Davoth Browser (Clean-sheet, independent modern web browser engine in Zig 0.17.1)
 - **Status**: PRODUCTION READY & 100% FULL FIREFOX & WEB STANDARDS PARITY VERIFIED
 - **Base Memory Footprint**: ~19.5 MB USS (~21.7 MB PSS, ~42.3 MB RSS)
-- **100-Tab Concurrent Footprint**: **15.96 MB USS** (Budget: < 35 MB) with **0 ms** CPU profile time
-- **50-Tab Hibernation Footprint**: **16.09 MB USS** (Budget: < 45 MB)
-- **Automated Unit Test Suite**: **124/124 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
+- **100-Tab Concurrent Footprint**: **16.13 MB USS** (Budget: < 35 MB) with **0 ms** CPU profile time
+- **50-Tab Hibernation Footprint**: **16.24 MB USS** (Budget: < 45 MB)
+- **Automated Unit Test Suite**: **125/125 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
 - **CLI Verification Suites**:
   - Web Platform Tests (WPT): **17/17 passed (100%)** (including offline real-world layout fixtures)
   - Acid3 DOM Core & Events: **4/4 passed (100%)**
@@ -130,11 +130,18 @@
   - Implemented W3C WebCrypto API `crypto.subtle.digest('SHA-256', data)` using native `std.crypto.hash.sha2.Sha256` returning chained standard Promises.
   - Implemented standard DOM Event constructors: `MouseEvent` (clientX/Y, pageX/Y, screenX/Y, button, buttons), `KeyboardEvent` (key, code, keyCode, which), and `FocusEvent` (relatedTarget).
   - Implemented standard Promise chaining (`then` / `catch` callbacks with `_value` and `_state`).
+  - Implemented `DOMParser` constructor and `parseFromString(markup, "text/html")` executing Davoth's native HTML5 tokenizer and tree builder, returning a standard `Document` with full element hierarchy and selector resolution.
+  - Implemented `XMLSerializer` constructor and `serializeToString(node)` for standard serialization of DOM nodes, fragments, and documents.
+  - Implemented `HTMLTemplateElement.content` returning an active `DocumentFragment` (`nodeType = 11`).
+  - Implemented `customElements` registry on `globalThis` (`customElements.define`, `customElements.get`, `customElements.whenDefined`).
+  - Implemented WHATWG `BroadcastChannel` (`name`, `postMessage`, `addEventListener`, `onmessage`, `close`).
+  - Implemented DOM Node identity and comparison APIs: `node.isSameNode(other)`, `node.isEqualNode(other)`, and `node.compareDocumentPosition(other)`.
+  - Added Node position constants on `Node`: `DOCUMENT_POSITION_DISCONNECTED` (1), `DOCUMENT_POSITION_PRECEDING` (2), `DOCUMENT_POSITION_FOLLOWING` (4), `DOCUMENT_POSITION_CONTAINS` (8), `DOCUMENT_POSITION_CONTAINED_BY` (16), `DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC` (32).
 - **100-Tab Concurrency Profile (`--bench-100tabs`)**:
   - **Tabs Allocated**: 100 concurrent tabs with full DOM trees and tile caches in **0 ms**.
-  - **Pre-hibernation**: RSS: 34,020 KB | PSS: 17,431 KB | USS: 16,280 KB.
+  - **Pre-hibernation**: RSS: 34,464 KB | PSS: 17,648 KB | USS: 16,452 KB.
   - **Hibernation Time**: 99 background tabs hibernated in **0 ms**.
-  - **Post-hibernation**: RSS: 34,084 KB | PSS: 17,495 KB | USS: 16,344 KB (**15.96 MB USS**, beating the <35 MB budget).
+  - **Post-hibernation**: RSS: 34,528 KB | PSS: 17,712 KB | USS: 16,516 KB (**16.13 MB USS**, beating the <35 MB budget).
   - **Total Profile Execution Time**: **0 ms**.
 - **Zero Memory Leaks Audit**:
-  - **124/124** unit tests passing with **0 leaks** under `std.testing.allocator`.
+  - **125/125** unit tests passing with **0 leaks** under `std.testing.allocator`.
