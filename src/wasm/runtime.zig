@@ -165,6 +165,136 @@ pub const Instance = struct {
                     const a = self.pop().toI32();
                     try self.push(.{ .I32 = a *% b });
                 },
+                0x6D => { // i32.div_s
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    if (b == 0) return error.DivisionByZero;
+                    try self.push(.{ .I32 = @divTrunc(a, b) });
+                },
+                0x6E => { // i32.div_u
+                    const b: u32 = @bitCast(self.pop().toI32());
+                    const a: u32 = @bitCast(self.pop().toI32());
+                    if (b == 0) return error.DivisionByZero;
+                    try self.push(.{ .I32 = @bitCast(a / b) });
+                },
+                0x6F => { // i32.rem_s
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    if (b == 0) return error.DivisionByZero;
+                    try self.push(.{ .I32 = @rem(a, b) });
+                },
+                0x70 => { // i32.rem_u
+                    const b: u32 = @bitCast(self.pop().toI32());
+                    const a: u32 = @bitCast(self.pop().toI32());
+                    if (b == 0) return error.DivisionByZero;
+                    try self.push(.{ .I32 = @bitCast(a % b) });
+                },
+                0x71 => { // i32.and
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = a & b });
+                },
+                0x72 => { // i32.or
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = a | b });
+                },
+                0x73 => { // i32.xor
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = a ^ b });
+                },
+                0x74 => { // i32.shl
+                    const b = @as(u5, @truncate(@as(u32, @bitCast(self.pop().toI32()))));
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = a << b });
+                },
+                0x75 => { // i32.shr_s
+                    const b = @as(u5, @truncate(@as(u32, @bitCast(self.pop().toI32()))));
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = a >> b });
+                },
+                0x76 => { // i32.shr_u
+                    const b = @as(u5, @truncate(@as(u32, @bitCast(self.pop().toI32()))));
+                    const a: u32 = @bitCast(self.pop().toI32());
+                    try self.push(.{ .I32 = @bitCast(a >> b) });
+                },
+                0x45 => { // i32.eqz
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a == 0) 1 else 0 });
+                },
+                0x46 => { // i32.eq
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a == b) 1 else 0 });
+                },
+                0x47 => { // i32.ne
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a != b) 1 else 0 });
+                },
+                0x48 => { // i32.lt_s
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a < b) 1 else 0 });
+                },
+                0x49 => { // i32.lt_u
+                    const b: u32 = @bitCast(self.pop().toI32());
+                    const a: u32 = @bitCast(self.pop().toI32());
+                    try self.push(.{ .I32 = if (a < b) 1 else 0 });
+                },
+                0x4A => { // i32.gt_s
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a > b) 1 else 0 });
+                },
+                0x4B => { // i32.gt_u
+                    const b: u32 = @bitCast(self.pop().toI32());
+                    const a: u32 = @bitCast(self.pop().toI32());
+                    try self.push(.{ .I32 = if (a > b) 1 else 0 });
+                },
+                0x4C => { // i32.le_s
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a <= b) 1 else 0 });
+                },
+                0x4E => { // i32.ge_s
+                    const b = self.pop().toI32();
+                    const a = self.pop().toI32();
+                    try self.push(.{ .I32 = if (a >= b) 1 else 0 });
+                },
+                0x28 => { // i32.load
+                    var dec = Decoder.init(code[ip..]);
+                    _ = try dec.readUleb128(); // align
+                    const offset = try dec.readUleb128();
+                    ip += dec.cursor;
+                    const base = @as(u32, @bitCast(self.pop().toI32()));
+                    if (self.memory) |*mem| {
+                        const val = try mem.loadI32(@as(usize, base) + @as(usize, offset));
+                        try self.push(.{ .I32 = val });
+                    }
+                },
+                0x36 => { // i32.store
+                    var dec = Decoder.init(code[ip..]);
+                    _ = try dec.readUleb128(); // align
+                    const offset = try dec.readUleb128();
+                    ip += dec.cursor;
+                    const val = self.pop().toI32();
+                    const base = @as(u32, @bitCast(self.pop().toI32()));
+                    if (self.memory) |*mem| {
+                        try mem.storeI32(@as(usize, base) + @as(usize, offset), val);
+                    }
+                },
+                0x1A => { // drop
+                    _ = self.pop();
+                },
+                0x1B => { // select
+                    const c_val = self.pop().toI32();
+                    const val2 = self.pop();
+                    const val1 = self.pop();
+                    try self.push(if (c_val != 0) val1 else val2);
+                },
+                0x01 => {}, // nop
                 0x0F => { // return
                     return self.pop();
                 },
@@ -192,4 +322,60 @@ test "wasm linear memory and execution" {
 
     const old_pages = try mem.grow(1);
     try std.testing.expectEqual(@as(u32, 1), old_pages);
+}
+
+test "wasm instruction execution for arithmetic, comparisons, bitwise, and select" {
+    const allocator = std.testing.allocator;
+
+    var module = WasmModule{
+        .types = .empty,
+        .functions = .empty,
+        .code_bodies = .empty,
+        .exports = .empty,
+        .memory_limits = .{ .min = 1, .max = 2 },
+    };
+    defer module.deinit(allocator);
+
+    // Bytecode: i32.const 20, i32.const 5, i32.div_s, end
+    const code_div = [_]u8{ 0x41, 20, 0x41, 5, 0x6D, 0x0B };
+    try module.code_bodies.append(allocator, .{
+        .local_count = 0,
+        .code = &code_div,
+    });
+
+    // Bytecode: i32.const 12, i32.const 10, i32.and, end (12 & 10 = 8)
+    const code_and = [_]u8{ 0x41, 12, 0x41, 10, 0x71, 0x0B };
+    try module.code_bodies.append(allocator, .{
+        .local_count = 0,
+        .code = &code_and,
+    });
+
+    // Bytecode: i32.const 5, i32.const 10, i32.lt_s, end (5 < 10 = 1)
+    const code_cmp = [_]u8{ 0x41, 5, 0x41, 10, 0x48, 0x0B };
+    try module.code_bodies.append(allocator, .{
+        .local_count = 0,
+        .code = &code_cmp,
+    });
+
+    // Bytecode: i32.const 111, i32.const 222, i32.const 1, select, end (select 111)
+    const code_sel = [_]u8{ 0x41, 111, 0x41, 126, 0x41, 1, 0x1B, 0x0B };
+    try module.code_bodies.append(allocator, .{
+        .local_count = 0,
+        .code = &code_sel,
+    });
+
+    var inst = try Instance.init(allocator, &module);
+    defer inst.deinit();
+
+    const res_div = try inst.invokeFunction(0, &[_]WasmValue{});
+    try std.testing.expectEqual(@as(i32, 4), res_div.toI32());
+
+    const res_and = try inst.invokeFunction(1, &[_]WasmValue{});
+    try std.testing.expectEqual(@as(i32, 8), res_and.toI32());
+
+    const res_cmp = try inst.invokeFunction(2, &[_]WasmValue{});
+    try std.testing.expectEqual(@as(i32, 1), res_cmp.toI32());
+
+    const res_sel = try inst.invokeFunction(3, &[_]WasmValue{});
+    try std.testing.expectEqual(@as(i32, 111), res_sel.toI32());
 }

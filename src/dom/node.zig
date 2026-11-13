@@ -133,6 +133,62 @@ pub const Node = struct {
         child.next_sibling = null;
     }
 
+    pub fn insertBefore(self: *Node, allocator: std.mem.Allocator, new_child: *Node, ref_child: ?*Node) !void {
+        if (ref_child == null) {
+            return self.appendChild(allocator, new_child);
+        }
+        const ref = ref_child.?;
+        if (ref.parent_node != self) {
+            return error.NotFound;
+        }
+
+        if (new_child.parent_node) |p| {
+            p.removeChild(new_child);
+        }
+
+        new_child.parent_node = self;
+        new_child.next_sibling = ref;
+        new_child.prev_sibling = ref.prev_sibling;
+
+        if (ref.prev_sibling) |prev| {
+            prev.next_sibling = new_child;
+        } else {
+            self.first_child = new_child;
+        }
+        ref.prev_sibling = new_child;
+    }
+
+    pub fn replaceChild(self: *Node, allocator: std.mem.Allocator, new_child: *Node, old_child: *Node) !void {
+        _ = allocator;
+        if (old_child.parent_node != self) {
+            return error.NotFound;
+        }
+
+        if (new_child.parent_node) |p| {
+            p.removeChild(new_child);
+        }
+
+        new_child.parent_node = self;
+        new_child.next_sibling = old_child.next_sibling;
+        new_child.prev_sibling = old_child.prev_sibling;
+
+        if (old_child.prev_sibling) |prev| {
+            prev.next_sibling = new_child;
+        } else {
+            self.first_child = new_child;
+        }
+
+        if (old_child.next_sibling) |next| {
+            next.prev_sibling = new_child;
+        } else {
+            self.last_child = new_child;
+        }
+
+        old_child.parent_node = null;
+        old_child.prev_sibling = null;
+        old_child.next_sibling = null;
+    }
+
     pub fn setAttribute(self: *Node, allocator: std.mem.Allocator, name: AtomId, value: []const u8) !void {
         for (self.attributes.items) |*attr| {
             if (attr.name == name) {
@@ -417,4 +473,35 @@ test "dom node querySelector, getElementsByTagName, getElementsByClassName, and 
     defer clone.deinit(allocator);
     try std.testing.expect(clone.first_child != null);
     try std.testing.expect(clone.first_child.?.next_sibling != null);
+}
+
+test "node insertBefore and replaceChild" {
+    const allocator = std.testing.allocator;
+    const table = try AtomTable.init(allocator);
+    defer table.deinit();
+
+    const root = try Node.create(allocator, .Element, try table.intern("div"));
+    defer root.deinit(allocator);
+
+    const first = try Node.create(allocator, .Element, try table.intern("span"));
+    const last = try Node.create(allocator, .Element, try table.intern("b"));
+
+    try root.appendChild(allocator, first);
+    try root.appendChild(allocator, last);
+
+    // Insert 'middle' before 'last'
+    const middle = try Node.create(allocator, .Element, try table.intern("i"));
+    try root.insertBefore(allocator, middle, last);
+
+    try std.testing.expectEqual(first, root.first_child.?);
+    try std.testing.expectEqual(middle, root.first_child.?.next_sibling.?);
+    try std.testing.expectEqual(last, root.last_child.?);
+
+    // Replace 'middle' with 'replacement'
+    const replacement = try Node.create(allocator, .Element, try table.intern("u"));
+    try root.replaceChild(allocator, replacement, middle);
+    middle.deinit(allocator); // deinit old detached child
+
+    try std.testing.expectEqual(replacement, root.first_child.?.next_sibling.?);
+    try std.testing.expectEqual(last, replacement.next_sibling.?);
 }
