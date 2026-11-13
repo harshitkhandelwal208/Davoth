@@ -13,6 +13,8 @@ const time = @import("../common/time.zig");
 const WasmDecoder = @import("../wasm/decoder.zig").Decoder;
 const WasmValidator = @import("../wasm/validator.zig").Validator;
 const WasmInstance = @import("../wasm/runtime.zig").Instance;
+const Node = @import("../dom/node.zig").Node;
+const TreeBuilder = @import("../html/tree_builder.zig").TreeBuilder;
 
 var timer_counter: i32 = 1;
 
@@ -353,64 +355,8 @@ pub fn initBuiltins(vm: *VM) !void {
     try global.setProperty(alloc, try table.intern("WebAssembly"), JSValue.fromObject(wasm_obj));
 
     // document Web API
-    const doc_obj = try vm.gc.allocateObject(null);
-    const body_elem = try createJsElement(vm, "body");
-    const head_elem = try createJsElement(vm, "head");
-    const html_elem = try createJsElement(vm, "html");
-
-    try doc_obj.setProperty(alloc, try table.intern("body"), JSValue.fromObject(body_elem));
-    try doc_obj.setProperty(alloc, try table.intern("head"), JSValue.fromObject(head_elem));
-    try doc_obj.setProperty(alloc, try table.intern("documentElement"), JSValue.fromObject(html_elem));
-    try doc_obj.setProperty(alloc, try table.intern("title"), JSValue.fromStringAtom(try table.intern("Davoth Browser")));
+    const doc_obj = try createJsDocument(vm);
     try doc_obj.setProperty(alloc, try table.intern("location"), JSValue.fromObject(loc_obj));
-    try doc_obj.setProperty(alloc, try table.intern("cookie"), JSValue.fromStringAtom(try table.intern("")));
-    try doc_obj.setProperty(alloc, try table.intern("readyState"), JSValue.fromStringAtom(try table.intern("complete")));
-    try doc_obj.setProperty(alloc, try table.intern("defaultView"), JSValue.fromObject(global));
-    try doc_obj.setProperty(alloc, try table.intern("nodeType"), JSValue.fromInt32(9));
-    try doc_obj.setProperty(alloc, try table.intern("nodeName"), JSValue.fromStringAtom(try table.intern("#document")));
-    try doc_obj.setProperty(alloc, try table.intern("compatMode"), JSValue.fromStringAtom(try table.intern("CSS1Compat")));
-    try doc_obj.setProperty(alloc, try table.intern("characterSet"), JSValue.fromStringAtom(try table.intern("UTF-8")));
-    try doc_obj.setProperty(alloc, try table.intern("contentType"), JSValue.fromStringAtom(try table.intern("text/html")));
-    try doc_obj.setProperty(alloc, try table.intern("hidden"), JSValue.false_val);
-    try doc_obj.setProperty(alloc, try table.intern("visibilityState"), JSValue.fromStringAtom(try table.intern("visible")));
-
-    try body_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
-    try head_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
-    try html_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
-
-    const create_elem_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateElement, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("createElement"), JSValue.fromObject(create_elem_fn));
-
-    const get_elem_id_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementById, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("getElementById"), JSValue.fromObject(get_elem_id_fn));
-
-    const doc_qs_fn = try vm.gc.allocateFunction(null, nativeDocumentQuerySelector, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("querySelector"), JSValue.fromObject(doc_qs_fn));
-
-    const doc_qsa_fn = try vm.gc.allocateFunction(null, nativeDocumentQuerySelectorAll, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("querySelectorAll"), JSValue.fromObject(doc_qsa_fn));
-
-    const doc_get_tag_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByTagName, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("getElementsByTagName"), JSValue.fromObject(doc_get_tag_fn));
-
-    const doc_get_cls_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByClassName, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("getElementsByClassName"), JSValue.fromObject(doc_get_cls_fn));
-
-    const doc_create_text_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateTextNode, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("createTextNode"), JSValue.fromObject(doc_create_text_fn));
-
-    const doc_create_frag_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateDocumentFragment, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("createDocumentFragment"), JSValue.fromObject(doc_create_frag_fn));
-
-    const doc_add_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetAddEventListener, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("addEventListener"), JSValue.fromObject(doc_add_ev_fn));
-
-    const doc_rem_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetRemoveEventListener, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("removeEventListener"), JSValue.fromObject(doc_rem_ev_fn));
-
-    const doc_disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
-    try doc_obj.setProperty(alloc, try table.intern("dispatchEvent"), JSValue.fromObject(doc_disp_ev_fn));
-
     try global.setProperty(alloc, try table.intern("document"), JSValue.fromObject(doc_obj));
 
     // Window viewport dimensions & properties
@@ -463,6 +409,12 @@ pub fn initBuiltins(vm: *VM) !void {
     try node_ctor.setProperty(alloc, try table.intern("COMMENT_NODE"), JSValue.fromInt32(8));
     try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_NODE"), JSValue.fromInt32(9));
     try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_FRAGMENT_NODE"), JSValue.fromInt32(11));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_POSITION_DISCONNECTED"), JSValue.fromInt32(1));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_POSITION_PRECEDING"), JSValue.fromInt32(2));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_POSITION_FOLLOWING"), JSValue.fromInt32(4));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_POSITION_CONTAINS"), JSValue.fromInt32(8));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_POSITION_CONTAINED_BY"), JSValue.fromInt32(16));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC"), JSValue.fromInt32(32));
     try global.setProperty(alloc, try table.intern("Node"), JSValue.fromObject(node_ctor));
 
     // Modern Observers: MutationObserver, ResizeObserver, IntersectionObserver
@@ -480,6 +432,34 @@ pub fn initBuiltins(vm: *VM) !void {
     const nf_ctor = try vm.gc.allocateFunction(null, nativeNumberFormatConstructor, @ptrCast(vm));
     try intl_obj.setProperty(alloc, try table.intern("NumberFormat"), JSValue.fromObject(nf_ctor));
     try global.setProperty(alloc, try table.intern("Intl"), JSValue.fromObject(intl_obj));
+
+    // DOMParser constructor
+    const dom_parser_ctor = try vm.gc.allocateFunction(null, nativeDOMParserConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("DOMParser"), JSValue.fromObject(dom_parser_ctor));
+
+    // XMLSerializer constructor
+    const xml_serializer_ctor = try vm.gc.allocateFunction(null, nativeXMLSerializerConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("XMLSerializer"), JSValue.fromObject(xml_serializer_ctor));
+
+    // BroadcastChannel constructor
+    const bc_ctor = try vm.gc.allocateFunction(null, nativeBroadcastChannelConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("BroadcastChannel"), JSValue.fromObject(bc_ctor));
+
+    // customElements registry
+    const custom_elements_obj = try vm.gc.allocateObject(null);
+    const registry_obj = try vm.gc.allocateObject(null);
+    try custom_elements_obj.setProperty(alloc, try table.intern("_registry"), JSValue.fromObject(registry_obj));
+
+    const ce_def_fn = try vm.gc.allocateFunction(null, nativeCustomElementsDefine, @ptrCast(vm));
+    try custom_elements_obj.setProperty(alloc, try table.intern("define"), JSValue.fromObject(ce_def_fn));
+
+    const ce_get_fn = try vm.gc.allocateFunction(null, nativeCustomElementsGet, @ptrCast(vm));
+    try custom_elements_obj.setProperty(alloc, try table.intern("get"), JSValue.fromObject(ce_get_fn));
+
+    const ce_when_def_fn = try vm.gc.allocateFunction(null, nativeCustomElementsWhenDefined, @ptrCast(vm));
+    try custom_elements_obj.setProperty(alloc, try table.intern("whenDefined"), JSValue.fromObject(ce_when_def_fn));
+
+    try global.setProperty(alloc, try table.intern("customElements"), JSValue.fromObject(custom_elements_obj));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -1983,6 +1963,24 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     const scroll_fn = try vm.gc.allocateFunction(null, nativeElementScrollIntoView, @ptrCast(vm));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("scrollIntoView"), JSValue.fromObject(scroll_fn));
 
+    const is_same_fn = try vm.gc.allocateFunction(null, nativeElementIsSameNode, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("isSameNode"), JSValue.fromObject(is_same_fn));
+
+    const is_equal_fn = try vm.gc.allocateFunction(null, nativeElementIsEqualNode, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("isEqualNode"), JSValue.fromObject(is_equal_fn));
+
+    const comp_pos_fn = try vm.gc.allocateFunction(null, nativeElementCompareDocumentPosition, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("compareDocumentPosition"), JSValue.fromObject(comp_pos_fn));
+
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("innerHTML"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("outerHTML"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+
+    if (std.ascii.eqlIgnoreCase(tag, "template")) {
+        const frag = try nativeDocumentCreateDocumentFragment(@ptrCast(vm), JSValue.undefined_val, &[_]JSValue{});
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("content"), frag);
+    }
+
     // Form element default properties
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("value"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("checked"), JSValue.false_val);
@@ -2944,6 +2942,413 @@ fn nativeNumberFormatFormat(ctx: *anyopaque, _: JSValue, args: []const JSValue) 
         else => "0",
     };
     return JSValue.fromStringAtom(try vm.atom_table.intern(str));
+}
+
+fn nativeElementIsSameNode(_: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    if (args.len == 0 or !args[0].isObject()) return JSValue.false_val;
+    return JSValue.fromBoolean(this_val.toObject() == args[0].toObject());
+}
+
+fn nativeElementIsEqualNode(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0 or !args[0].isObject()) return JSValue.false_val;
+    const a = this_val.toObject() orelse return JSValue.false_val;
+    const b = args[0].toObject().?;
+    if (a == b) return JSValue.true_val;
+
+    const nt_atom = try vm.atom_table.intern("nodeType");
+    const a_nt = a.getProperty(nt_atom) orelse JSValue.undefined_val;
+    const b_nt = b.getProperty(nt_atom) orelse JSValue.undefined_val;
+    if (a_nt.toInt32() != b_nt.toInt32()) return JSValue.false_val;
+
+    const nn_atom = try vm.atom_table.intern("nodeName");
+    const a_nn = a.getProperty(nn_atom) orelse JSValue.undefined_val;
+    const b_nn = b.getProperty(nn_atom) orelse JSValue.undefined_val;
+    if (a_nn.isString() and b_nn.isString()) {
+        if (!std.mem.eql(u8, vm.atom_table.get(a_nn.toStringAtom()), vm.atom_table.get(b_nn.toStringAtom()))) {
+            return JSValue.false_val;
+        }
+    }
+
+    const id_atom = try vm.atom_table.intern("id");
+    const a_id = a.getProperty(id_atom) orelse JSValue.undefined_val;
+    const b_id = b.getProperty(id_atom) orelse JSValue.undefined_val;
+    if (a_id.isString() and b_id.isString()) {
+        if (!std.mem.eql(u8, vm.atom_table.get(a_id.toStringAtom()), vm.atom_table.get(b_id.toStringAtom()))) {
+            return JSValue.false_val;
+        }
+    }
+
+    const cls_atom = try vm.atom_table.intern("className");
+    const a_cls = a.getProperty(cls_atom) orelse JSValue.undefined_val;
+    const b_cls = b.getProperty(cls_atom) orelse JSValue.undefined_val;
+    if (a_cls.isString() and b_cls.isString()) {
+        if (!std.mem.eql(u8, vm.atom_table.get(a_cls.toStringAtom()), vm.atom_table.get(b_cls.toStringAtom()))) {
+            return JSValue.false_val;
+        }
+    }
+
+    return JSValue.true_val;
+}
+
+fn nativeElementCompareDocumentPosition(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    if (args.len == 0 or !args[0].isObject()) return JSValue.fromInt32(1); // DISCONNECTED
+    const this_obj = this_val.toObject() orelse return JSValue.fromInt32(1);
+    const other_obj = args[0].toObject().?;
+    if (this_obj == other_obj) return JSValue.fromInt32(0);
+
+    const contains_res = try nativeElementContains(ctx, this_val, args);
+    if (contains_res.toBoolean()) {
+        return JSValue.fromInt32(16 | 4); // CONTAINED_BY | FOLLOWING
+    }
+
+    const rev_contains_res = try nativeElementContains(ctx, args[0], &[_]JSValue{this_val});
+    if (rev_contains_res.toBoolean()) {
+        return JSValue.fromInt32(8 | 2); // CONTAINS | PRECEDING
+    }
+
+    return JSValue.fromInt32(1); // DISCONNECTED
+}
+
+fn serializeJsElement(vm: *VM, obj: *JSObject, out: *std.ArrayList(u8)) anyerror!void {
+    const node_type_val = obj.getProperty(try vm.atom_table.intern("nodeType")) orelse JSValue.fromInt32(1);
+    const node_type = node_type_val.toInt32();
+
+    if (node_type == 3) {
+        if (obj.getProperty(try vm.atom_table.intern("textContent"))) |tc| {
+            if (tc.isString()) {
+                try out.appendSlice(vm.allocator, vm.atom_table.get(tc.toStringAtom()));
+            }
+        }
+        return;
+    }
+
+    if (node_type == 9) {
+        if (obj.getProperty(try vm.atom_table.intern("body"))) |b| {
+            if (b.toObject()) |b_obj| {
+                try serializeJsElement(vm, b_obj, out);
+            }
+        }
+        return;
+    }
+
+    if (node_type == 11) {
+        const children_atom = try vm.atom_table.intern("_children");
+        if (obj.getProperty(children_atom)) |c_val| {
+            if (c_val.toObject()) |c_arr| {
+                var items: std.ArrayList(JSValue) = .empty;
+                defer items.deinit(vm.allocator);
+                try getArrayElements(vm, c_arr, &items);
+                for (items.items) |it| {
+                    if (it.toObject()) |child_obj| {
+                        try serializeJsElement(vm, child_obj, out);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    var tag_name: []const u8 = "div";
+    if (obj.getProperty(try vm.atom_table.intern("tagName"))) |tn| {
+        if (tn.isString()) {
+            tag_name = vm.atom_table.get(tn.toStringAtom());
+        }
+    }
+
+    try out.append(vm.allocator, '<');
+    try out.appendSlice(vm.allocator, tag_name);
+
+    if (obj.getProperty(try vm.atom_table.intern("id"))) |id_val| {
+        if (id_val.isString()) {
+            const id_str = vm.atom_table.get(id_val.toStringAtom());
+            if (id_str.len > 0) {
+                try out.appendSlice(vm.allocator, " id=\"");
+                try out.appendSlice(vm.allocator, id_str);
+                try out.append(vm.allocator, '"');
+            }
+        }
+    }
+
+    if (obj.getProperty(try vm.atom_table.intern("className"))) |cls_val| {
+        if (cls_val.isString()) {
+            const cls_str = vm.atom_table.get(cls_val.toStringAtom());
+            if (cls_str.len > 0) {
+                try out.appendSlice(vm.allocator, " class=\"");
+                try out.appendSlice(vm.allocator, cls_str);
+                try out.append(vm.allocator, '"');
+            }
+        }
+    }
+
+    try out.append(vm.allocator, '>');
+
+    const is_void = std.ascii.eqlIgnoreCase(tag_name, "img") or
+        std.ascii.eqlIgnoreCase(tag_name, "br") or
+        std.ascii.eqlIgnoreCase(tag_name, "hr") or
+        std.ascii.eqlIgnoreCase(tag_name, "input") or
+        std.ascii.eqlIgnoreCase(tag_name, "meta") or
+        std.ascii.eqlIgnoreCase(tag_name, "link");
+
+    if (!is_void) {
+        const children_atom = try vm.atom_table.intern("_children");
+        if (obj.getProperty(children_atom)) |c_val| {
+            if (c_val.toObject()) |c_arr| {
+                var items: std.ArrayList(JSValue) = .empty;
+                defer items.deinit(vm.allocator);
+                try getArrayElements(vm, c_arr, &items);
+                for (items.items) |it| {
+                    if (it.toObject()) |child_obj| {
+                        try serializeJsElement(vm, child_obj, out);
+                    }
+                }
+            }
+        }
+        try out.appendSlice(vm.allocator, "</");
+        try out.appendSlice(vm.allocator, tag_name);
+        try out.append(vm.allocator, '>');
+    }
+}
+
+fn nativeXMLSerializerConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    const serialize_fn = try vm.gc.allocateFunction(null, nativeXMLSerializerSerializeToString, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("serializeToString"), JSValue.fromObject(serialize_fn));
+    return JSValue.fromObject(inst);
+}
+
+fn nativeXMLSerializerSerializeToString(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0 or !args[0].isObject()) return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    const node_obj = args[0].toObject().?;
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(vm.allocator);
+    try serializeJsElement(vm, node_obj, &out);
+
+    const atom = try vm.atom_table.intern(out.items);
+    return JSValue.fromStringAtom(atom);
+}
+
+fn nodeToJsElement(vm: *VM, node: *const Node) anyerror!*JSObject {
+    if (node.node_type == .Text) {
+        const text_str = node.text_content orelse "";
+        const text_atom = try vm.atom_table.intern(text_str);
+        const text_obj = try vm.gc.allocateObject(null);
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(3));
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#text")));
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), JSValue.fromStringAtom(text_atom));
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeValue"), JSValue.fromStringAtom(text_atom));
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+        return text_obj;
+    }
+
+    const tag_str = vm.atom_table.get(node.tag_name);
+    const elem = try createJsElement(vm, tag_str);
+
+    for (node.attributes.items) |attr| {
+        const attr_name = vm.atom_table.get(attr.name);
+        const val_str = std.mem.trim(u8, attr.value, "\"\'");
+        const val_atom = try vm.atom_table.intern(val_str);
+        _ = try nativeElementSetAttribute(@ptrCast(vm), JSValue.fromObject(elem), &[_]JSValue{
+            JSValue.fromStringAtom(attr.name),
+            JSValue.fromStringAtom(val_atom),
+        });
+        if (std.mem.eql(u8, attr_name, "id")) {
+            try elem.setProperty(vm.allocator, try vm.atom_table.intern("id"), JSValue.fromStringAtom(val_atom));
+        } else if (std.mem.eql(u8, attr_name, "class")) {
+            try elem.setProperty(vm.allocator, try vm.atom_table.intern("className"), JSValue.fromStringAtom(val_atom));
+            var it = std.mem.tokenizeScalar(u8, val_str, ' ');
+            while (it.next()) |cls| {
+                const cls_atom = try vm.atom_table.intern(cls);
+                const cl_val = elem.getProperty(try vm.atom_table.intern("classList")) orelse continue;
+                _ = try nativeClassListAdd(@ptrCast(vm), cl_val, &[_]JSValue{JSValue.fromStringAtom(cls_atom)});
+            }
+        }
+    }
+
+    var curr = node.first_child;
+    while (curr) |ch| : (curr = ch.next_sibling) {
+        const child_obj = try nodeToJsElement(vm, ch);
+        _ = try nativeElementAppendChild(@ptrCast(vm), JSValue.fromObject(elem), &[_]JSValue{JSValue.fromObject(child_obj)});
+    }
+
+    return elem;
+}
+
+pub fn createJsDocument(vm: *VM) anyerror!*JSObject {
+    const alloc = vm.allocator;
+    const table = vm.atom_table;
+    const doc_obj = try vm.gc.allocateObject(null);
+    const body_elem = try createJsElement(vm, "body");
+    const head_elem = try createJsElement(vm, "head");
+    const html_elem = try createJsElement(vm, "html");
+
+    try doc_obj.setProperty(alloc, try table.intern("body"), JSValue.fromObject(body_elem));
+    try doc_obj.setProperty(alloc, try table.intern("head"), JSValue.fromObject(head_elem));
+    try doc_obj.setProperty(alloc, try table.intern("documentElement"), JSValue.fromObject(html_elem));
+    try doc_obj.setProperty(alloc, try table.intern("title"), JSValue.fromStringAtom(try table.intern("Davoth Browser")));
+    try doc_obj.setProperty(alloc, try table.intern("cookie"), JSValue.fromStringAtom(try table.intern("")));
+    try doc_obj.setProperty(alloc, try table.intern("readyState"), JSValue.fromStringAtom(try table.intern("complete")));
+    try doc_obj.setProperty(alloc, try table.intern("defaultView"), JSValue.fromObject(vm.global_object));
+    try doc_obj.setProperty(alloc, try table.intern("nodeType"), JSValue.fromInt32(9));
+    try doc_obj.setProperty(alloc, try table.intern("nodeName"), JSValue.fromStringAtom(try table.intern("#document")));
+    try doc_obj.setProperty(alloc, try table.intern("compatMode"), JSValue.fromStringAtom(try table.intern("CSS1Compat")));
+    try doc_obj.setProperty(alloc, try table.intern("characterSet"), JSValue.fromStringAtom(try table.intern("UTF-8")));
+    try doc_obj.setProperty(alloc, try table.intern("contentType"), JSValue.fromStringAtom(try table.intern("text/html")));
+    try doc_obj.setProperty(alloc, try table.intern("hidden"), JSValue.false_val);
+    try doc_obj.setProperty(alloc, try table.intern("visibilityState"), JSValue.fromStringAtom(try table.intern("visible")));
+
+    try body_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
+    try head_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
+    try html_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
+
+    const create_elem_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateElement, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createElement"), JSValue.fromObject(create_elem_fn));
+
+    const get_elem_id_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementById, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementById"), JSValue.fromObject(get_elem_id_fn));
+
+    const doc_qs_fn = try vm.gc.allocateFunction(null, nativeDocumentQuerySelector, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("querySelector"), JSValue.fromObject(doc_qs_fn));
+
+    const doc_qsa_fn = try vm.gc.allocateFunction(null, nativeDocumentQuerySelectorAll, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("querySelectorAll"), JSValue.fromObject(doc_qsa_fn));
+
+    const doc_get_tag_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByTagName, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementsByTagName"), JSValue.fromObject(doc_get_tag_fn));
+
+    const doc_get_cls_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByClassName, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementsByClassName"), JSValue.fromObject(doc_get_cls_fn));
+
+    const doc_create_text_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateTextNode, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createTextNode"), JSValue.fromObject(doc_create_text_fn));
+
+    const doc_create_frag_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateDocumentFragment, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createDocumentFragment"), JSValue.fromObject(doc_create_frag_fn));
+
+    const doc_add_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetAddEventListener, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("addEventListener"), JSValue.fromObject(doc_add_ev_fn));
+
+    const doc_rem_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetRemoveEventListener, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("removeEventListener"), JSValue.fromObject(doc_rem_ev_fn));
+
+    const doc_disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("dispatchEvent"), JSValue.fromObject(doc_disp_ev_fn));
+
+    return doc_obj;
+}
+
+fn nativeDOMParserConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    const parse_fn = try vm.gc.allocateFunction(null, nativeDOMParserParseFromString, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("parseFromString"), JSValue.fromObject(parse_fn));
+    return JSValue.fromObject(inst);
+}
+
+fn nativeDOMParserParseFromString(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const doc_obj = try createJsDocument(vm);
+    if (args.len == 0 or !args[0].isString()) {
+        return JSValue.fromObject(doc_obj);
+    }
+
+    const markup = vm.atom_table.get(args[0].toStringAtom());
+    var temp_root = try Node.create(vm.allocator, .Element, try vm.atom_table.intern("body"));
+    defer temp_root.deinit(vm.allocator);
+
+    TreeBuilder.parseFragment(vm.allocator, vm.atom_table, temp_root, markup) catch {
+        return JSValue.fromObject(doc_obj);
+    };
+
+    const body_val = doc_obj.getProperty(try vm.atom_table.intern("body")) orelse return JSValue.fromObject(doc_obj);
+    var curr = temp_root.first_child;
+    while (curr) |ch| : (curr = ch.next_sibling) {
+        const js_child = try nodeToJsElement(vm, ch);
+        _ = try nativeElementAppendChild(ctx, body_val, &[_]JSValue{JSValue.fromObject(js_child)});
+    }
+
+    return JSValue.fromObject(doc_obj);
+}
+
+fn nativeBroadcastChannelConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    const name_val = if (args.len > 0 and args[0].isString()) args[0] else JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("name"), name_val);
+
+    const post_fn = try vm.gc.allocateFunction(null, nativeBroadcastChannelPostMessage, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("postMessage"), JSValue.fromObject(post_fn));
+
+    const close_fn = try vm.gc.allocateFunction(null, nativeBroadcastChannelClose, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("close"), JSValue.fromObject(close_fn));
+
+    const add_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetAddEventListener, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("addEventListener"), JSValue.fromObject(add_ev_fn));
+
+    const rem_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetRemoveEventListener, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("removeEventListener"), JSValue.fromObject(rem_ev_fn));
+
+    const disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("dispatchEvent"), JSValue.fromObject(disp_ev_fn));
+
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("onmessage"), JSValue.null_val);
+    return JSValue.fromObject(inst);
+}
+
+fn nativeBroadcastChannelPostMessage(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const msg_data = if (args.len > 0) args[0] else JSValue.undefined_val;
+
+    const ev = try vm.gc.allocateObject(null);
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("type"), JSValue.fromStringAtom(try vm.atom_table.intern("message")));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("data"), msg_data);
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("target"), this_val);
+
+    if (inst.getProperty(try vm.atom_table.intern("onmessage"))) |onm| {
+        if (onm.isObject()) {
+            _ = try vm.call(onm, this_val, &[_]JSValue{JSValue.fromObject(ev)});
+        }
+    }
+    _ = try nativeEventTargetDispatchEvent(ctx, this_val, &[_]JSValue{JSValue.fromObject(ev)});
+    return JSValue.undefined_val;
+}
+
+fn nativeBroadcastChannelClose(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeCustomElementsDefine(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len < 2 or !args[0].isString()) return JSValue.undefined_val;
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const reg_val = inst.getProperty(try vm.atom_table.intern("_registry")) orelse return JSValue.undefined_val;
+    const reg_obj = reg_val.toObject() orelse return JSValue.undefined_val;
+
+    const name_atom = args[0].toStringAtom();
+    try reg_obj.setProperty(vm.allocator, name_atom, args[1]);
+    return JSValue.undefined_val;
+}
+
+fn nativeCustomElementsGet(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0 or !args[0].isString()) return JSValue.undefined_val;
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const reg_val = inst.getProperty(try vm.atom_table.intern("_registry")) orelse return JSValue.undefined_val;
+    const reg_obj = reg_val.toObject() orelse return JSValue.undefined_val;
+
+    const name_atom = args[0].toStringAtom();
+    return reg_obj.getProperty(name_atom) orelse JSValue.undefined_val;
+}
+
+fn nativeCustomElementsWhenDefined(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ctor = try nativeCustomElementsGet(ctx, this_val, args);
+    const prom = try createPromiseObject(vm, ctor);
+    return JSValue.fromObject(prom);
 }
 
 fn nativeElementAppend(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -4550,4 +4955,132 @@ test "universal web standards: DocumentFragment ParentNode ChildNode Events and 
     const res4 = try vm.execute(&code4);
     try std.testing.expect(res4.isString());
     try std.testing.expectEqualStrings("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", atom_table.get(res4.toStringAtom()));
+}
+
+test "universal web standards: DOMParser XMLSerializer template customElements BroadcastChannel and Node comparison" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. DOMParser, getElementById, querySelector, and classList on parsed elements
+    const script_parser =
+        \\let p = new DOMParser();
+        \\let doc = p.parseFromString('<div id="app" class="card active"><h3>Title</h3><p>Hello world</p></div>', 'text/html');
+        \\let app = doc.getElementById('app');
+        \\let hasActive = app.classList.contains('active');
+        \\let h3 = doc.querySelector('h3');
+        \\let isH3 = (h3.tagName === 'h3');
+        \\return hasActive && isH3;
+    ;
+    var p1 = Parser.init(allocator, script_parser);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_dom_parser");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. XMLSerializer serializing parsed nodes
+    const script_serializer =
+        \\let p = new DOMParser();
+        \\let doc = p.parseFromString('<section id="box"><span class="badge">Item</span></section>', 'text/html');
+        \\let box = doc.getElementById('box');
+        \\let s = new XMLSerializer();
+        \\let xml = s.serializeToString(box);
+        \\return xml;
+    ;
+    var p2 = Parser.init(allocator, script_serializer);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_serializer");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isString());
+    try std.testing.expectEqualStrings("<section id=\"box\"><span class=\"badge\">Item</span></section>", atom_table.get(res2.toStringAtom()));
+
+    // 3. HTMLTemplateElement .content DocumentFragment
+    const script_template =
+        \\let tpl = document.createElement("template");
+        \\let frag = tpl.content;
+        \\let isFrag = (frag.nodeType === 11);
+        \\let child = document.createElement("p");
+        \\frag.appendChild(child);
+        \\return isFrag && (frag._children.length === 1);
+    ;
+    var p3 = Parser.init(allocator, script_template);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_template");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
+
+    // 4. Node comparison: isSameNode, isEqualNode, compareDocumentPosition
+    const script_node_comp =
+        \\let elA = document.createElement("div");
+        \\let elB = document.createElement("div");
+        \\let sameSelf = elA.isSameNode(elA);
+        \\let diffOther = !elA.isSameNode(elB);
+        \\let equalDivs = elA.isEqualNode(elB);
+        \\let posSelf = (elA.compareDocumentPosition(elA) === 0);
+        \\elA.appendChild(elB);
+        \\let posContain = (elA.compareDocumentPosition(elB) === 20);
+        \\return sameSelf && diffOther && equalDivs && posSelf && posContain;
+    ;
+    var p4 = Parser.init(allocator, script_node_comp);
+    const ast4 = try p4.parseProgram();
+    defer ast4.deinit(allocator);
+
+    var c4 = BytecodeCompiler.init(allocator, atom_table, "test_node_comp");
+    var code4 = try c4.compile(ast4);
+    defer code4.deinit();
+
+    const res4 = try vm.execute(&code4);
+    try std.testing.expect(res4.isBoolean());
+    try std.testing.expect(res4.toBoolean());
+
+    // 5. customElements registry and BroadcastChannel
+    const script_ce_bc =
+        \\function CustomBadge() {}
+        \\customElements.define("custom-badge", CustomBadge);
+        \\let got = customElements.get("custom-badge");
+        \\let isRegistered = (got === CustomBadge);
+        \\let bc = new BroadcastChannel("worker-events");
+        \\let isBcName = (bc.name === "worker-events");
+        \\bc.close();
+        \\return isRegistered && isBcName;
+    ;
+    var p5 = Parser.init(allocator, script_ce_bc);
+    const ast5 = try p5.parseProgram();
+    defer ast5.deinit(allocator);
+
+    var c5 = BytecodeCompiler.init(allocator, atom_table, "test_ce_bc");
+    var code5 = try c5.compile(ast5);
+    defer code5.deinit();
+
+    const res5 = try vm.execute(&code5);
+    try std.testing.expect(res5.isBoolean());
+    try std.testing.expect(res5.toBoolean());
 }
