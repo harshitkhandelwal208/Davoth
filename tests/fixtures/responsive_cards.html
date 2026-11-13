@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Responsive Component Cards</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #f0f2f5;
+      color: #1c1e21;
+      font-family: sans-serif;
+    }
+    .card-deck {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      justify-content: flex-start;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .feature-card {
+      background: #ffffff;
+      border: 1px solid #dddfe2;
+      border-radius: 8px;
+      padding: 20px;
+      width: 320px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+    }
+    .badge-pill {
+      display: inline-block;
+      background: #e7f3ff;
+      color: #1877f2;
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .card-heading {
+      font-size: 18px;
+      font-weight: 600;
+      margin: 8px 0;
+    }
+    .card-text {
+      font-size: 14px;
+      color: #606770;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="card-deck">
+    <div class="feature-card">
+      <span class="badge-pill">Privacy</span>
+      <h3 class="card-heading">AdNauseam Native</h3>
+      <p class="card-text">Automated tracking blocking and obfuscated synthetic click generation.</p>
+    </div>
+    <div class="feature-card">
+      <span class="badge-pill">Security</span>
+      <h3 class="card-heading">Bitwarden Vault</h3>
+      <p class="card-text">Direct native PBKDF2/AES-256 vault integration and seamless form autofill.</p>
+    </div>
+    <div class="feature-card">
+      <span class="badge-pill">Productivity</span>
+      <h3 class="card-heading">Vim Navigation</h3>
+      <p class="card-text">Home-row modal keybindings and dynamic hint generation for keyboard navigation.</p>
+    </div>
+  </div>
+</body>
+</html>

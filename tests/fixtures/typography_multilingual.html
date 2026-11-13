@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Complex Typography and Monospace Layout</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 32px;
+      background: #ffffff;
+      color: #24292f;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+    }
+    .article-container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 28px;
+      border-bottom: 1px solid #d0d7de;
+      padding-bottom: 8px;
+    }
+    blockquote {
+      margin: 16px 0;
+      padding: 0 16px;
+      color: #57606a;
+      border-left: 4px solid #d0d7de;
+    }
+    pre.code-block {
+      background-color: #f6f8fa;
+      border-radius: 6px;
+      padding: 16px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 13px;
+      border: 1px solid #d0d7de;
+      overflow-x: auto;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    .data-table th, .data-table td {
+      border: 1px solid #d0d7de;
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .data-table th {
+      background-color: #f6f8fa;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="article-container">
+    <h1>Davoth Engine Architecture Specification</h1>
+    <blockquote>
+      "Extreme memory efficiency without sacrificing feature completeness or web standards."
+    </blockquote>
+    <p>The Davoth browser engine provides complete Firefox parity with lightweight slab allocation.</p>
+    <pre class="code-block">const engine = try Davoth.Engine.init(allocator);
+try engine.navigate("https://davoth.org");
+engine.renderToSoftwareBuffer();</pre>
+    <table class="data-table">
+      <thead>
+        <tr><th>Subsystem</th><th>Target Memory</th><th>Actual USS</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Base Engine</td><td>&lt; 20 MB</td><td>19.5 MB</td></tr>
+        <tr><td>50 Hibernated Tabs</td><td>&lt; 45 MB</td><td>15.0 MB</td></tr>
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

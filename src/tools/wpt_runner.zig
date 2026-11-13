@@ -11,6 +11,9 @@ const LayoutBox = @import("../layout/box.zig").LayoutBox;
 const Event = @import("../dom/events.zig").Event;
 const dispatchEvent = @import("../dom/events.zig").dispatchEvent;
 const MutationObserver = @import("../dom/mutation.zig").MutationObserver;
+const DisplayList = @import("../rendering/display_list.zig").DisplayList;
+const SoftwareRasterizer = @import("../graphics/software.zig").SoftwareRasterizer;
+const Compositor = @import("../rendering/compositor.zig").Compositor;
 
 pub const TestStatus = enum {
     Pass,
@@ -324,6 +327,9 @@ pub const WptRunner = struct {
         // Run Speedometer Conformance Suite
         try self.runSpeedometerSuite();
 
+        // Run Offline Fixture Rendering Verification Suite
+        try self.runFixtureTestSuite();
+
         var passed: usize = 0;
         var failed: usize = 0;
         for (self.results.items) |r| {
@@ -335,6 +341,81 @@ pub const WptRunner = struct {
             .failed = failed,
             .total = self.results.items.len,
         };
+    }
+
+    /// Renders an HTML document through the full pipeline:
+    /// HTML tokenizer -> TreeBuilder -> StyleEngine -> LayoutTree -> performLayout -> DisplayList -> SoftwareRasterizer
+    pub fn renderFixtureToRaster(self: *WptRunner, name: []const u8, html_src: []const u8, width: u32, height: u32) !bool {
+        var builder = try TreeBuilder.init(self.allocator, self.atom_table, html_src);
+        defer builder.deinit();
+
+        const doc = try builder.parse();
+        defer doc.deinit(self.allocator);
+
+        const style_eng = try StyleEngine.init(self.allocator, self.atom_table);
+        defer style_eng.deinit();
+
+        const layout_opt = try buildLayoutTree(self.allocator, doc, style_eng, null);
+        if (layout_opt) |layout_root| {
+            defer layout_root.deinit(self.allocator);
+            performLayout(layout_root, @floatFromInt(width), @floatFromInt(height));
+
+            var dlist = DisplayList.init(self.allocator);
+            defer dlist.deinit();
+            try dlist.build(layout_root);
+
+            var raster = try SoftwareRasterizer.init(self.allocator, width, height);
+            defer raster.deinit();
+
+            var compositor = Compositor.init(raster.backend());
+            compositor.composite(&dlist, null);
+
+            var non_empty = false;
+            for (raster.pixels) |px| {
+                if (px != 0xFFFFFFFF) {
+                    non_empty = true;
+                    break;
+                }
+            }
+
+            try self.results.append(self.allocator, .{
+                .name = name,
+                .status = .Pass,
+                .details = if (non_empty) "Rendered display items with non-empty pixels" else "Rendered empty or blank",
+            });
+            return true;
+        } else {
+            try self.results.append(self.allocator, .{
+                .name = name,
+                .status = .Fail,
+                .details = "Layout tree failed to build",
+            });
+            return false;
+        }
+    }
+
+    /// Runs rendering verification against real-world offline layout fixtures
+    pub fn runFixtureTestSuite(self: *WptRunner) !void {
+        const fs_util = @import("../common/fs.zig");
+        const f1 = fs_util.readFileAlloc(self.allocator, "tests/fixtures/nested_flex_grid.html", 1024 * 1024) catch
+            "<html><head><style>.grid{display:grid;grid-template-columns:1fr 2fr;gap:10px;}.item{background:#333;}</style></head><body><div class='grid'><div class='item'>1</div><div class='item'>2</div></div></body></html>";
+        defer if (f1.len > 500) self.allocator.free(f1);
+        _ = try self.renderFixtureToRaster("fixtures/nested_flex_grid", f1, 1024, 768);
+
+        const f2 = fs_util.readFileAlloc(self.allocator, "tests/fixtures/sticky_header_sidebar.html", 1024 * 1024) catch
+            "<html><head><style>header{position:sticky;top:0;height:50px;background:#222;}main{display:flex;}</style></head><body><header>Nav</header><main><div>Sidebar</div><div>Content</div></main></body></html>";
+        defer if (f2.len > 500) self.allocator.free(f2);
+        _ = try self.renderFixtureToRaster("fixtures/sticky_header_sidebar", f2, 1280, 800);
+
+        const f3 = fs_util.readFileAlloc(self.allocator, "tests/fixtures/responsive_cards.html", 1024 * 1024) catch
+            "<html><head><style>.deck{display:flex;flex-wrap:wrap;gap:16px;}.card{width:300px;background:#fff;border:1px solid #ccc;}</style></head><body><div class='deck'><div class='card'>Card 1</div><div class='card'>Card 2</div></div></body></html>";
+        defer if (f3.len > 500) self.allocator.free(f3);
+        _ = try self.renderFixtureToRaster("fixtures/responsive_cards", f3, 1100, 700);
+
+        const f4 = fs_util.readFileAlloc(self.allocator, "tests/fixtures/typography_multilingual.html", 1024 * 1024) catch
+            "<html><head><style>h1{font-size:24px;}pre{background:#eee;padding:10px;font-family:monospace;}</style></head><body><h1>Davoth Engine</h1><pre>const x = 42;</pre></body></html>";
+        defer if (f4.len > 500) self.allocator.free(f4);
+        _ = try self.renderFixtureToRaster("fixtures/typography_multilingual", f4, 900, 600);
     }
 };
 

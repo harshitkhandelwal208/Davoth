@@ -222,4 +222,6 @@ test "subsystem full verification" {
     _ = @import("ui/pdf_viewer.zig");
     _ = @import("ui/session_restore.zig");
     _ = @import("storage/sessions.zig");
+    _ = @import("js/builtins.zig");
+    _ = @import("js/promise.zig");
 }

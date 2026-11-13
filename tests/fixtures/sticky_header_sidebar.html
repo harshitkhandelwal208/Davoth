@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sticky Header and Responsive Sidebar</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0d1117;
+      color: #c9d1d9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    header.sticky-nav {
+      position: sticky;
+      top: 0;
+      height: 56px;
+      background-color: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 100;
+    }
+    .brand-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #58a6ff;
+    }
+    .main-layout {
+      display: flex;
+      flex-direction: row;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+      gap: 32px;
+    }
+    aside.sticky-sidebar {
+      position: sticky;
+      top: 80px;
+      width: 240px;
+      height: 400px;
+      background-color: #161b22;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      padding: 16px;
+    }
+    main.content-area {
+      flex: 1;
+      background-color: #161b22;
+      border-radius: 6px;
+      border: 1px solid #30363d;
+      padding: 24px;
+      min-height: 800px;
+    }
+  </style>
+</head>
+<body>
+  <header class="sticky-nav">
+    <div class="brand-title">Davoth Browser Engine</div>
+    <nav><span>Docs</span> | <span>Settings</span></nav>
+  </header>
+  <div class="main-layout">
+    <aside class="sticky-sidebar">
+      <h4>Documentation Index</h4>
+      <ul>
+        <li>Architecture</li>
+        <li>Memory Management</li>
+        <li>CSS Layout</li>
+      </ul>
+    </aside>
+    <main class="content-area">
+      <h1>Extreme Memory Efficiency</h1>
+      <p>Davoth combines clean-sheet Zig engineering with sub-20MB base memory consumption.</p>
+    </main>
+  </div>
+</body>
+</html>

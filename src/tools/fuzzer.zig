@@ -7,6 +7,12 @@ const JSParser = @import("../js/parser.zig").Parser;
 const URL = @import("../common/url.zig").URL;
 const quic = @import("../net/http3.zig");
 const websocket = @import("../net/websocket.zig");
+const Node = @import("../dom/node.zig").Node;
+const Event = @import("../dom/events.zig").Event;
+const dispatchEvent = @import("../dom/events.zig").dispatchEvent;
+const TabManager = @import("../ui/tabs.zig").TabManager;
+const TileCache = @import("../rendering/tile_cache.zig").TileCache;
+const SubsystemMemoryTracker = @import("../common/memory.zig").SubsystemMemoryTracker;
 
 pub const FuzzTarget = enum {
     Html,
@@ -15,6 +21,8 @@ pub const FuzzTarget = enum {
     Url,
     Quic,
     WebSocket,
+    SpaDom,
+    TabSwitching,
 };
 
 pub const FuzzReport = struct {
@@ -203,6 +211,109 @@ pub const Fuzzer = struct {
             .crashes = crashes,
         };
     }
+
+    /// Simulates real-world SPA dynamic DOM mutation, element creation/removal, and event propagation
+    pub fn fuzzSpaDomMutations(self: *Fuzzer, cycles: usize) !FuzzReport {
+        const crashes: usize = 0;
+        const div_tag = try self.atom_table.intern("div");
+        const btn_tag = try self.atom_table.intern("button");
+        const span_tag = try self.atom_table.intern("span");
+        const class_atom = try self.atom_table.intern("class");
+        const click_atom = try self.atom_table.intern("click");
+
+        const Handler = struct {
+            fn onClick(ctx: *anyopaque, _: *anyopaque) void {
+                const flag: *bool = @ptrCast(@alignCast(ctx));
+                flag.* = true;
+            }
+        };
+
+        var cycle: usize = 0;
+        while (cycle < cycles) : (cycle += 1) {
+            const root = try Node.create(self.allocator, .Element, div_tag);
+            defer root.deinit(self.allocator);
+
+            var fired = false;
+
+            // 1. Dynamic Element Creation & Insertion
+            var i: usize = 0;
+            while (i < 5) : (i += 1) {
+                const child = try Node.create(self.allocator, .Element, if (i == 0) btn_tag else span_tag);
+                try child.setAttribute(self.allocator, class_atom, "spa-element");
+
+                if (i == 0) {
+                    try child.addEventListener(self.allocator, click_atom, Handler.onClick, &fired, false);
+                }
+
+                try root.appendChild(self.allocator, child);
+            }
+
+            // 2. Event Dispatch through capture, target, bubble
+            var ev = Event{
+                .event_type = click_atom,
+                .bubbles = true,
+                .cancelable = true,
+            };
+            if (root.first_child) |btn| {
+                _ = try dispatchEvent(self.allocator, btn, &ev);
+            }
+
+            // 3. Dynamic Element Removal
+            while (root.first_child) |fc| {
+                root.removeChild(fc);
+                fc.deinit(self.allocator);
+            }
+        }
+
+        return .{
+            .target = .SpaDom,
+            .iterations = cycles,
+            .crashes = crashes,
+        };
+    }
+
+    /// Simulates multi-tab switching, background hibernation, and complete memory reclamation
+    pub fn fuzzTabSwitchingAndSlabReclamation(self: *Fuzzer, iterations: usize) !FuzzReport {
+        const crashes: usize = 0;
+        var iter: usize = 0;
+        while (iter < iterations) : (iter += 1) {
+            var mgr = TabManager.init(self.allocator);
+            defer mgr.deinit();
+
+            // Open 5 tabs with content
+            var t_idx: usize = 0;
+            while (t_idx < 5) : (t_idx += 1) {
+                var url_buf: [64]u8 = undefined;
+                const url = try std.fmt.bufPrint(&url_buf, "https://davoth.local/app/{d}", .{t_idx});
+                const doc = try Node.create(self.allocator, .Document, @enumFromInt(0));
+                const body = try Node.create(self.allocator, .Element, @enumFromInt(1));
+                try doc.appendChild(self.allocator, body);
+
+                const tc = try self.allocator.create(TileCache);
+                tc.* = try TileCache.init(self.allocator, 800, 600);
+
+                _ = try mgr.newTabWithContent(url, "Tab Title", .Default, doc, tc);
+            }
+
+            // Switch active tab
+            _ = mgr.activateTab(2);
+            _ = mgr.activateTab(4);
+
+            // Hibernate inactive background tabs
+            _ = mgr.hibernateAllBackgroundTabs();
+
+            // Close tabs sequentially
+            while (mgr.tabs.items.len > 0) {
+                mgr.closeTab(0);
+            }
+        }
+
+        return .{
+            .target = .TabSwitching,
+            .iterations = iterations,
+            .crashes = crashes,
+        };
+    }
 };
 
 test "parser fuzzer execution on html, css, js, url and quic" {
@@ -251,4 +362,24 @@ test "500-iteration memory leak fuzzing with std.testing.allocator" {
 
     const r_ws = fuzzer.fuzzWebSocket(500);
     try std.testing.expectEqual(@as(usize, 0), r_ws.crashes);
+}
+
+test "2000-cycle SPA dynamic DOM mutation and event propagation stress fuzzing" {
+    const allocator = std.testing.allocator;
+    var fuzzer = try Fuzzer.init(allocator, 0x1122334455667788);
+    defer fuzzer.deinit();
+
+    const report = try fuzzer.fuzzSpaDomMutations(2000);
+    try std.testing.expectEqual(@as(usize, 2000), report.iterations);
+    try std.testing.expectEqual(@as(usize, 0), report.crashes);
+}
+
+test "1000-iteration multi-tab switching and memory reclamation" {
+    const allocator = std.testing.allocator;
+    var fuzzer = try Fuzzer.init(allocator, 0x8877665544332211);
+    defer fuzzer.deinit();
+
+    const report = try fuzzer.fuzzTabSwitchingAndSlabReclamation(1000);
+    try std.testing.expectEqual(@as(usize, 1000), report.iterations);
+    try std.testing.expectEqual(@as(usize, 0), report.crashes);
 }

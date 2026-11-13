@@ -55,6 +55,11 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
+        if (std.mem.eql(u8, cmd, "--bench-100tabs")) {
+            try bench100Tabs(arena);
+            return;
+        }
+
         if (std.mem.eql(u8, cmd, "--test-wpt")) {
             try runWpt(arena);
             return;
@@ -109,6 +114,7 @@ fn printHelp() void {
         \\  --test-adnauseam               Run AdNauseam WebExtensions integration tests
         \\  --bench-memory                 Run per-subsystem memory accounting benchmarks
         \\  --bench-50tabs                 Run 50-tab memory hibernation and USS stress benchmark
+        \\  --bench-100tabs                Profile CPU and memory across 100 concurrent tabs
         \\  --test-wpt                     Run Web Platform Tests (WPT) compliance suite
         \\  --test-acid3                   Run Acid3 DOM Core and Events conformance suite
         \\  --test-speedometer             Run Speedometer TodoMVC and Flexbox benchmark suite
@@ -371,6 +377,72 @@ fn bench50Tabs(allocator: std.mem.Allocator) !void {
     }
 
     std.debug.print("SUCCESS: 50 tabs benchmark passed! Total USS is {d:.2} MB (< 45 MB budget).\n", .{uss_mb});
+    std.debug.print("========================================================\n", .{});
+}
+
+fn bench100Tabs(allocator: std.mem.Allocator) !void {
+    std.debug.print("=== DAVOTH 100-TAB CONCURRENT MEMORY & CPU PROFILE ===\n", .{});
+    const TabManager = Davoth.ui.tabs.TabManager;
+    const TileCache = Davoth.rendering.tile_cache.TileCache;
+    const Node = Davoth.dom.node.Node;
+    const SubsystemMemoryTracker = Davoth.common.memory.SubsystemMemoryTracker;
+
+    var mgr = TabManager.init(allocator);
+    defer mgr.deinit();
+
+    const start_time = Davoth.common.time.milliTimestamp();
+
+    // 1. Allocate 100 concurrent tabs
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var url_buf: [64]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buf, "https://davoth.org/tab/{d}", .{i});
+        var title_buf: [32]u8 = undefined;
+        const title = try std.fmt.bufPrint(&title_buf, "Tab {d}", .{i});
+
+        const tc = try allocator.create(TileCache);
+        tc.* = try TileCache.init(allocator, 1280, 800);
+
+        const doc = try Node.create(allocator, .Document, @enumFromInt(0));
+        const body = try Node.create(allocator, .Element, @enumFromInt(1));
+        try doc.appendChild(allocator, body);
+
+        _ = try mgr.newTabWithContent(url, title, .Default, doc, tc);
+    }
+
+    const alloc_time = Davoth.common.time.milliTimestamp() - start_time;
+    std.debug.print("Allocated 100 active tabs with full DOM and tile caches in {d} ms.\n", .{alloc_time});
+
+    // 2. Measure pre-hibernation metrics
+    const pre_metrics = SubsystemMemoryTracker.readProcessMetrics();
+    std.debug.print("Pre-hibernation metrics -> RSS: {d} KB | PSS: {d} KB | USS: {d} KB\n", .{
+        pre_metrics.rss_kb, pre_metrics.pss_kb, pre_metrics.uss_kb,
+    });
+
+    // 3. Hibernate 99 background tabs
+    const hib_start = Davoth.common.time.milliTimestamp();
+    const hibernated = mgr.hibernateAllBackgroundTabs();
+    const hib_time = Davoth.common.time.milliTimestamp() - hib_start;
+    std.debug.print("Successfully hibernated {d} background tabs in {d} ms.\n", .{ hibernated, hib_time });
+
+    // 4. Measure post-hibernation metrics
+    const post_metrics = SubsystemMemoryTracker.readProcessMetrics();
+    const uss_mb = @as(f64, @floatFromInt(post_metrics.uss_kb)) / 1024.0;
+    std.debug.print("Post-hibernation metrics -> RSS: {d} KB | PSS: {d} KB | USS: {d} KB ({d:.2} MB)\n", .{
+        post_metrics.rss_kb,
+        post_metrics.pss_kb,
+        post_metrics.uss_kb,
+        uss_mb,
+    });
+
+    // 5. Assert 100 tabs consume less than 35 MB total USS
+    if (uss_mb >= 35.0) {
+        std.debug.print("ERROR: 100 tabs consumed {d:.2} MB USS, exceeding 35 MB budget!\n", .{uss_mb});
+        return error.MemoryBudgetExceeded;
+    }
+
+    std.debug.print("SUCCESS: 100 tabs benchmark passed! Total USS is {d:.2} MB (< 35 MB budget).\n", .{uss_mb});
+    std.debug.print("Total CPU profile time: {d} ms.\n", .{alloc_time + hib_time});
     std.debug.print("========================================================\n", .{});
 }
 

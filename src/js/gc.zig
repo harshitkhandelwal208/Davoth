@@ -61,6 +61,19 @@ pub const GarbageCollector = struct {
         return obj;
     }
 
+    pub fn allocateFunction(
+        self: *GarbageCollector,
+        proto: ?*JSObject,
+        n_fn: @import("object.zig").NativeFn,
+        ctx: ?*anyopaque,
+    ) !*JSObject {
+        const obj = try self.allocateObject(proto);
+        obj.builtin_type = .NativeFunction;
+        obj.native_fn = n_fn;
+        obj.native_ctx = ctx;
+        return obj;
+    }
+
     pub fn registerRootObject(self: *GarbageCollector, obj: *JSObject) !void {
         try self.root_objects.append(self.allocator, obj);
     }

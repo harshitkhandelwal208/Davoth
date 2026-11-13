@@ -74,6 +74,39 @@ pub const JSPromise = struct {
             try self.reject_reactions.append(self.allocator, rx);
         }
     }
+
+    pub fn allSettled(allocator: std.mem.Allocator, promises: []const *JSPromise) !*JSPromise {
+        const out_p = try JSPromise.init(allocator);
+        var settled_count: usize = 0;
+        for (promises) |p| {
+            if (p.state != .Pending) settled_count += 1;
+        }
+        if (settled_count == promises.len) {
+            out_p.fulfill(JSValue.fromInt32(@intCast(promises.len)));
+        }
+        return out_p;
+    }
+
+    pub fn any(allocator: std.mem.Allocator, promises: []const *JSPromise) !*JSPromise {
+        const out_p = try JSPromise.init(allocator);
+        for (promises) |p| {
+            if (p.state == .Fulfilled) {
+                out_p.fulfill(p.result);
+                return out_p;
+            }
+        }
+        var all_rejected = true;
+        for (promises) |p| {
+            if (p.state != .Rejected) {
+                all_rejected = false;
+                break;
+            }
+        }
+        if (all_rejected and promises.len > 0) {
+            out_p.reject(promises[0].result);
+        }
+        return out_p;
+    }
 };
 
 pub const Microtask = struct {
@@ -129,4 +162,29 @@ test "promise lifecycle and reactions" {
     p.fulfill(JSValue.fromFloat64(99.5));
     try std.testing.expectEqual(PromiseState.Fulfilled, p.state);
     try std.testing.expectEqual(@as(f64, 99.5), received_val);
+}
+
+test "promise allSettled and any combinators" {
+    const allocator = std.testing.allocator;
+
+    const p1 = try JSPromise.init(allocator);
+    defer p1.deinit();
+    const p2 = try JSPromise.init(allocator);
+    defer p2.deinit();
+
+    p1.fulfill(JSValue.fromInt32(10));
+    p2.reject(JSValue.fromInt32(20));
+
+    var list = [_]*JSPromise{ p1, p2 };
+    const p_settled = try JSPromise.allSettled(allocator, &list);
+    defer p_settled.deinit();
+
+    try std.testing.expectEqual(PromiseState.Fulfilled, p_settled.state);
+    try std.testing.expectEqual(@as(i32, 2), p_settled.result.toInt32());
+
+    const p_any = try JSPromise.any(allocator, &list);
+    defer p_any.deinit();
+
+    try std.testing.expectEqual(PromiseState.Fulfilled, p_any.state);
+    try std.testing.expectEqual(@as(i32, 10), p_any.result.toInt32());
 }
