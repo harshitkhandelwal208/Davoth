@@ -188,6 +188,14 @@ test "color parse hex and u32 roundtrip" {
     try std.testing.expectEqual(c1.a, c2.a);
 }
 
+pub const ContainerId = enum(u8) {
+    Default = 0,
+    Personal = 1,
+    Work = 2,
+    Banking = 3,
+    Shopping = 4,
+};
+
 test "rect contains and intersects" {
     const r1 = Rect.init(10, 10, 100, 100);
     try std.testing.expect(r1.contains(Point.init(50, 50)));

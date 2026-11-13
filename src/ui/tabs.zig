@@ -8,13 +8,7 @@ const TileCache = @import("../rendering/tile_cache.zig").TileCache;
 const Node = @import("../dom/node.zig").Node;
 const time = @import("../common/time.zig");
 
-pub const ContainerId = enum(u8) {
-    Default = 0,
-    Personal = 1,
-    Work = 2,
-    Banking = 3,
-    Shopping = 4,
-};
+pub const ContainerId = @import("../common/types.zig").ContainerId;
 
 pub const TabState = enum {
     Active,

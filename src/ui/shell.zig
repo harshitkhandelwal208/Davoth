@@ -30,6 +30,10 @@ const detectLoginForm = @import("../components/bitwarden/autofill.zig").detectLo
 const autofillForm = @import("../components/bitwarden/autofill.zig").autofillForm;
 const DownloadManager = @import("../net/downloads.zig").DownloadManager;
 const DownloadsPanel = @import("downloads_panel.zig").DownloadsPanel;
+const PipManager = @import("pip.zig").PipManager;
+const PipWindow = @import("pip.zig").PipWindow;
+const PdfViewer = @import("pdf_viewer.zig").PdfViewer;
+const SessionRestoreDialog = @import("session_restore.zig").SessionRestoreDialog;
 
 pub const BrowserShell = struct {
     allocator: std.mem.Allocator,
@@ -50,6 +54,9 @@ pub const BrowserShell = struct {
     current_layout: ?*LayoutBox = null,
     download_manager: DownloadManager,
     downloads_panel: DownloadsPanel,
+    pip_manager: PipManager,
+    pdf_viewer: PdfViewer,
+    session_restore: SessionRestoreDialog,
 
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) !*BrowserShell {
         const shell = try allocator.create(BrowserShell);
@@ -84,6 +91,9 @@ pub const BrowserShell = struct {
             .current_layout = null,
             .download_manager = dl_mgr,
             .downloads_panel = undefined,
+            .pip_manager = PipManager.init(allocator),
+            .pdf_viewer = PdfViewer.init(allocator),
+            .session_restore = SessionRestoreDialog.init(allocator, null),
         };
         shell.compositor = Compositor.init(shell.rasterizer.backend());
         shell.downloads_panel = DownloadsPanel.init(allocator, &shell.download_manager);
@@ -94,6 +104,9 @@ pub const BrowserShell = struct {
     }
 
     pub fn deinit(self: *BrowserShell) void {
+        self.session_restore.deinit();
+        self.pdf_viewer.deinit();
+        self.pip_manager.deinit();
         self.download_manager.deinit();
         if (self.current_layout) |l| l.deinit(self.allocator);
         if (self.current_doc) |d| d.deinit(self.allocator);
@@ -192,6 +205,27 @@ pub const BrowserShell = struct {
             ;
         } else if (std.mem.startsWith(u8, effective_url, "about:downloads")) {
             html = try self.downloads_panel.renderAboutDownloadsHtml();
+            need_free_html = true;
+        } else if (std.mem.startsWith(u8, effective_url, "about:sessionrestore")) {
+            html = try self.session_restore.renderHtml(self.allocator);
+            need_free_html = true;
+        } else if (std.mem.startsWith(u8, effective_url, "about:pdf")) {
+            html = try self.pdf_viewer.renderHtml(self.allocator);
+            need_free_html = true;
+        } else if (std.mem.endsWith(u8, effective_url, ".pdf")) {
+            var pdf_bytes: []const u8 = "";
+            var need_free_bytes = false;
+            if (std.mem.startsWith(u8, effective_url, "file://")) {
+                pdf_bytes = try fs.readFileAlloc(self.allocator, effective_url[7..], 50 * 1024 * 1024);
+                need_free_bytes = true;
+            } else {
+                const resp = try self.http_client.get(effective_url);
+                pdf_bytes = resp.body;
+                need_free_bytes = true;
+            }
+            defer if (need_free_bytes) self.allocator.free(pdf_bytes);
+            self.pdf_viewer.loadDocument(pdf_bytes) catch {};
+            html = try self.pdf_viewer.renderHtml(self.allocator);
             need_free_html = true;
         } else if (std.mem.startsWith(u8, effective_url, "file://")) {
             const path = effective_url[7..];
@@ -370,6 +404,18 @@ pub const BrowserShell = struct {
         }
         return false;
     }
+
+    pub fn openPip(self: *BrowserShell, tab_id: u32, title: []const u8, url: []const u8, duration: f64) !*PipWindow {
+        return try self.pip_manager.openPip(tab_id, title, url, duration);
+    }
+
+    pub fn closePip(self: *BrowserShell, id: u32) bool {
+        return self.pip_manager.closePip(id);
+    }
+
+    pub fn restoreSession(self: *BrowserShell) !usize {
+        return try self.session_restore.restoreSelected(&self.tab_manager);
+    }
 };
 
 test "browser shell initialization, navigation, and script execution" {
@@ -412,4 +458,26 @@ test "browser shell bitwarden native autofill integration" {
     // Lock vault
     shell.lockBitwarden();
     try std.testing.expect(!shell.vault.is_unlocked);
+}
+
+test "browser shell pip player, pdf viewer, and session restore" {
+    const allocator = std.testing.allocator;
+    const shell = try BrowserShell.init(allocator, 800, 600);
+    defer shell.deinit();
+
+    // 1. Picture-in-Picture window management
+    const pip = try shell.openPip(1, "Davoth Demo Stream", "https://cdn.davoth.org/demo.mp4", 120.0);
+    try std.testing.expectEqual(@as(usize, 1), shell.pip_manager.activePipCount());
+    pip.seek(30.0);
+    try std.testing.expectEqual(@as(f64, 30.0), pip.current_time);
+    try std.testing.expect(shell.closePip(pip.id));
+    try std.testing.expectEqual(@as(usize, 0), shell.pip_manager.activePipCount());
+
+    // 2. PDF viewer navigation
+    try shell.navigate("about:pdf");
+    try std.testing.expect(shell.current_doc != null);
+
+    // 3. Session restore navigation
+    try shell.navigate("about:sessionrestore");
+    try std.testing.expect(shell.current_doc != null);
 }
