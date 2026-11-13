@@ -308,7 +308,7 @@ pub const DownloadManager = struct {
 
     fn persistItem(self: *DownloadManager, item: *const DownloadItem) !void {
         if (self.db) |*database| {
-            const sql = try std.fmt.allocPrintZ(
+            const sql = try std.fmt.allocPrintSentinel(
                 self.allocator,
                 \\INSERT OR REPLACE INTO downloads (id, url, file_path, mime_type, total_bytes, received_bytes, state, timestamp)
                 \\VALUES ({d}, '{s}', '{s}', '{s}', {d}, {d}, {d}, {d});
@@ -323,6 +323,7 @@ pub const DownloadManager = struct {
                     @intFromEnum(item.state),
                     time.timestamp(),
                 },
+                0,
             );
             defer self.allocator.free(sql);
             try database.execute(sql);

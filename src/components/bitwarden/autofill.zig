@@ -36,14 +36,27 @@ pub const IdentityForm = struct {
     country_node: ?*Node = null,
 };
 
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
 /// Intelligent form detection heuristic identifying username, password, and TOTP inputs
 pub fn detectLoginForm(node: *Node, table: *AtomTable) LoginForm {
     var form = LoginForm{};
-    scanLoginFieldsRecursive(node, table, &form);
+    var candidate_input: ?*Node = null;
+    scanLoginFieldsRecursive(node, table, &form, &candidate_input);
+    if (form.username_node == null and form.password_node != null) {
+        form.username_node = candidate_input;
+    }
     return form;
 }
 
-fn scanLoginFieldsRecursive(node: *Node, table: *AtomTable, form: *LoginForm) void {
+fn scanLoginFieldsRecursive(node: *Node, table: *AtomTable, form: *LoginForm, candidate_input: *?*Node) void {
     if (node.node_type == .Element) {
         const input_atom = table.intern("input") catch return;
         const button_atom = table.intern("button") catch return;
@@ -61,33 +74,35 @@ fn scanLoginFieldsRecursive(node: *Node, table: *AtomTable, form: *LoginForm) vo
             const place_val = node.getAttribute(place_atom) orelse "";
 
             if (std.ascii.eqlIgnoreCase(t_val, "password") or
-                std.mem.indexOf(u8, auto_val, "password") != null)
+                containsIgnoreCase(auto_val, "password"))
             {
                 if (form.password_node == null) {
                     form.password_node = node;
                 }
-            } else if (std.mem.indexOf(u8, auto_val, "one-time-code") != null or
-                std.mem.indexOf(u8, name_val, "totp") != null or
-                std.mem.indexOf(u8, name_val, "otp") != null or
-                std.mem.indexOf(u8, id_val, "totp") != null)
+            } else if (containsIgnoreCase(auto_val, "one-time-code") or
+                containsIgnoreCase(name_val, "totp") or
+                containsIgnoreCase(name_val, "otp") or
+                containsIgnoreCase(id_val, "totp"))
             {
                 if (form.totp_node == null) {
                     form.totp_node = node;
                 }
             } else if (std.ascii.eqlIgnoreCase(t_val, "text") or
                 std.ascii.eqlIgnoreCase(t_val, "email") or
-                std.mem.indexOf(u8, auto_val, "username") != null or
-                std.mem.indexOf(u8, auto_val, "email") != null)
+                containsIgnoreCase(auto_val, "username") or
+                containsIgnoreCase(auto_val, "email"))
             {
+                candidate_input.* = node;
                 if (form.username_node == null) {
-                    const is_login_field = std.mem.indexOf(u8, name_val, "user") != null or
-                        std.mem.indexOf(u8, name_val, "login") != null or
-                        std.mem.indexOf(u8, name_val, "email") != null or
-                        std.mem.indexOf(u8, id_val, "user") != null or
-                        std.mem.indexOf(u8, id_val, "login") != null or
-                        std.mem.indexOf(u8, id_val, "email") != null or
-                        std.mem.indexOf(u8, place_val, "email") != null or
-                        std.mem.indexOf(u8, place_val, "username") != null or
+                    const is_login_field = std.ascii.eqlIgnoreCase(t_val, "email") or
+                        containsIgnoreCase(name_val, "user") or
+                        containsIgnoreCase(name_val, "login") or
+                        containsIgnoreCase(name_val, "email") or
+                        containsIgnoreCase(id_val, "user") or
+                        containsIgnoreCase(id_val, "login") or
+                        containsIgnoreCase(id_val, "email") or
+                        containsIgnoreCase(place_val, "email") or
+                        containsIgnoreCase(place_val, "username") or
                         form.password_node != null;
 
                     if (is_login_field) {
@@ -107,7 +122,7 @@ fn scanLoginFieldsRecursive(node: *Node, table: *AtomTable, form: *LoginForm) vo
 
     var curr = node.first_child;
     while (curr) |child| {
-        scanLoginFieldsRecursive(child, table, form);
+        scanLoginFieldsRecursive(child, table, form, candidate_input);
         curr = child.next_sibling;
     }
 }

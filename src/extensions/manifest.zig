@@ -110,6 +110,86 @@ pub const Manifest = struct {
             }
         }
 
+        var content_scripts = std.ArrayList(ContentScript).empty;
+        errdefer {
+            for (content_scripts.items) |*cs| cs.deinit(allocator);
+            content_scripts.deinit(allocator);
+        }
+
+        if (root.get("content_scripts")) |cs_val| {
+            if (cs_val == .array) {
+                for (cs_val.array.items) |cs_entry| {
+                    if (cs_entry == .object) {
+                        var matches = std.ArrayList([]const u8).empty;
+                        errdefer {
+                            for (matches.items) |m| allocator.free(m);
+                            matches.deinit(allocator);
+                        }
+                        if (cs_entry.object.get("matches")) |m_val| {
+                            if (m_val == .array) {
+                                for (m_val.array.items) |m_item| {
+                                    if (m_item == .string) {
+                                        try matches.append(allocator, try allocator.dupe(u8, m_item.string));
+                                    }
+                                }
+                            }
+                        }
+
+                        var js_files = std.ArrayList([]const u8).empty;
+                        errdefer {
+                            for (js_files.items) |j| allocator.free(j);
+                            js_files.deinit(allocator);
+                        }
+                        if (cs_entry.object.get("js")) |j_val| {
+                            if (j_val == .array) {
+                                for (j_val.array.items) |j_item| {
+                                    if (j_item == .string) {
+                                        try js_files.append(allocator, try allocator.dupe(u8, j_item.string));
+                                    }
+                                }
+                            }
+                        }
+
+                        var css_files = std.ArrayList([]const u8).empty;
+                        errdefer {
+                            for (css_files.items) |c| allocator.free(c);
+                            css_files.deinit(allocator);
+                        }
+                        if (cs_entry.object.get("css")) |c_val| {
+                            if (c_val == .array) {
+                                for (c_val.array.items) |c_item| {
+                                    if (c_item == .string) {
+                                        try css_files.append(allocator, try allocator.dupe(u8, c_item.string));
+                                    }
+                                }
+                            }
+                        }
+
+                        var run_at: RunAt = .DocumentIdle;
+                        if (cs_entry.object.get("run_at")) |r_val| {
+                            if (r_val == .string) {
+                                if (std.mem.eql(u8, r_val.string, "document_start")) run_at = .DocumentStart;
+                                if (std.mem.eql(u8, r_val.string, "document_end")) run_at = .DocumentEnd;
+                            }
+                        }
+
+                        var all_frames = false;
+                        if (cs_entry.object.get("all_frames")) |af_val| {
+                            if (af_val == .bool) all_frames = af_val.bool;
+                        }
+
+                        try content_scripts.append(allocator, .{
+                            .matches = matches,
+                            .js_files = js_files,
+                            .css_files = css_files,
+                            .run_at = run_at,
+                            .all_frames = all_frames,
+                        });
+                    }
+                }
+            }
+        }
+
         return Manifest{
             .allocator = allocator,
             .manifest_version = m_version,
@@ -120,8 +200,69 @@ pub const Manifest = struct {
             .permissions = perms,
             .background_page = bg_page,
             .background_scripts = bg_scripts,
-            .content_scripts = .empty,
+            .content_scripts = content_scripts,
             .popup_path = null,
+        };
+    }
+
+    pub fn clone(self: *const Manifest, allocator: std.mem.Allocator) !Manifest {
+        var perms = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (perms.items) |p| allocator.free(p);
+            perms.deinit(allocator);
+        }
+        for (self.permissions.items) |p| {
+            try perms.append(allocator, try allocator.dupe(u8, p));
+        }
+
+        var bg_scripts = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (bg_scripts.items) |s| allocator.free(s);
+            bg_scripts.deinit(allocator);
+        }
+        for (self.background_scripts.items) |s| {
+            try bg_scripts.append(allocator, try allocator.dupe(u8, s));
+        }
+
+        var c_scripts = std.ArrayList(ContentScript).empty;
+        errdefer {
+            for (c_scripts.items) |*cs| cs.deinit(allocator);
+            c_scripts.deinit(allocator);
+        }
+        for (self.content_scripts.items) |cs| {
+            var matches = std.ArrayList([]const u8).empty;
+            for (cs.matches.items) |m| {
+                try matches.append(allocator, try allocator.dupe(u8, m));
+            }
+            var js_list = std.ArrayList([]const u8).empty;
+            for (cs.js_files.items) |j| {
+                try js_list.append(allocator, try allocator.dupe(u8, j));
+            }
+            var css_list = std.ArrayList([]const u8).empty;
+            for (cs.css_files.items) |c_item| {
+                try css_list.append(allocator, try allocator.dupe(u8, c_item));
+            }
+            try c_scripts.append(allocator, .{
+                .matches = matches,
+                .js_files = js_list,
+                .css_files = css_list,
+                .run_at = cs.run_at,
+                .all_frames = cs.all_frames,
+            });
+        }
+
+        return Manifest{
+            .allocator = allocator,
+            .manifest_version = self.manifest_version,
+            .name = try allocator.dupe(u8, self.name),
+            .version = try allocator.dupe(u8, self.version),
+            .description = self.description,
+            .extension_id = if (self.extension_id.len > 0) try allocator.dupe(u8, self.extension_id) else "",
+            .permissions = perms,
+            .background_page = if (self.background_page) |bp| try allocator.dupe(u8, bp) else null,
+            .background_scripts = bg_scripts,
+            .content_scripts = c_scripts,
+            .popup_path = if (self.popup_path) |p| try allocator.dupe(u8, p) else null,
         };
     }
 

@@ -151,7 +151,7 @@ pub fn encryptAes256Cbc(allocator: std.mem.Allocator, plaintext: []const u8, key
     }
 
     const total_cipher = 16 + @as(usize, @intCast(out_len1 + out_len2));
-    return ciphertext[0..total_cipher];
+    return try allocator.realloc(ciphertext, total_cipher);
 }
 
 /// Decrypts ciphertext where first 16 bytes are IV.
@@ -183,7 +183,7 @@ pub fn decryptAes256Cbc(allocator: std.mem.Allocator, ciphertext_with_iv: []cons
     }
 
     const total_plain = @as(usize, @intCast(out_len1 + out_len2));
-    return out_buf[0..total_plain];
+    return try allocator.realloc(out_buf, total_plain);
 }
 
 /// Encrypts plaintext and produces a standard Bitwarden Type 2 CipherString: "2.<iv_b64>|<ciphertext_b64>|<mac_b64>"
@@ -296,7 +296,7 @@ pub fn decryptCipherString(allocator: std.mem.Allocator, cipher_str: []const u8,
     }
 
     const total_plain = @as(usize, @intCast(out_len1 + out_len2));
-    return out_buf[0..total_plain];
+    return try allocator.realloc(out_buf, total_plain);
 }
 
 pub fn generatePassword(allocator: std.mem.Allocator, length: usize, uppercase: bool, lowercase: bool, numbers: bool, special: bool) ![]u8 {

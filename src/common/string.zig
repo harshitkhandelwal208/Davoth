@@ -39,13 +39,14 @@ pub const AtomTable = struct {
 
     pub fn deinit(self: *AtomTable) void {
         self.mutex.lock();
-        defer self.mutex.unlock();
         for (self.atoms.items[1..]) |atom| {
             self.allocator.free(atom);
         }
         self.atoms.deinit(self.allocator);
         self.map.deinit();
-        self.allocator.destroy(self);
+        const alloc = self.allocator;
+        self.mutex.unlock();
+        alloc.destroy(self);
     }
 
     pub fn intern(self: *AtomTable, str: []const u8) !AtomId {

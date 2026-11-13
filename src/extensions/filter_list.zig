@@ -157,11 +157,6 @@ pub const FilterEngine = struct {
                 rule_str = rule_str[2..];
             }
 
-            // Strip trailing separator '^'
-            if (std.mem.endsWith(u8, rule_str, "^")) {
-                rule_str = rule_str[0 .. rule_str.len - 1];
-            }
-
             // Check options e.g. $third-party
             var third_party = false;
             var opt_domain: ?[]const u8 = null;
@@ -178,6 +173,11 @@ pub const FilterEngine = struct {
                     const d_end = std.mem.indexOfScalarPos(u8, opts, d_start, ',') orelse opts.len;
                     opt_domain = try self.allocator.dupe(u8, opts[d_start..d_end]);
                 }
+            }
+
+            // Strip trailing separator '^'
+            if (std.mem.endsWith(u8, rule_str, "^")) {
+                rule_str = rule_str[0 .. rule_str.len - 1];
             }
 
             try self.network_filters.append(self.allocator, .{

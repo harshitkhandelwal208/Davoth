@@ -191,4 +191,19 @@ pub const tools = struct {
 
 test "subsystem full verification" {
     std.testing.refAllDecls(@This());
+    _ = @import("ui/reader_mode.zig");
+    _ = @import("ui/downloads_panel.zig");
+    _ = @import("net/downloads.zig");
+    _ = @import("ui/vim.zig");
+    _ = @import("components/bitwarden/autofill.zig");
+    _ = @import("components/bitwarden/crypto.zig");
+    _ = @import("components/bitwarden/vault.zig");
+    _ = @import("components/bitwarden/sync.zig");
+    _ = @import("extensions/filter_list.zig");
+    _ = @import("extensions/runtime.zig");
+    _ = @import("common/memory.zig");
+    _ = @import("common/string.zig");
+    _ = @import("dom/node.zig");
+    _ = @import("ui/tabs.zig");
+    _ = @import("ui/shell.zig");
 }

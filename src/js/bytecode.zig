@@ -101,6 +101,10 @@ pub const CodeBlock = struct {
         return idx;
     }
 
+    pub fn addLocal(self: *CodeBlock, name: []const u8) !u16 {
+        return self.resolveOrAddLocal(name);
+    }
+
     pub fn resolveLocal(self: *CodeBlock, name: []const u8) ?u16 {
         for (self.local_names.items, 0..) |loc, i| {
             if (std.mem.eql(u8, loc, name)) return @truncate(i);

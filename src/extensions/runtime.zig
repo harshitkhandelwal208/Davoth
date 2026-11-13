@@ -142,7 +142,7 @@ pub const ExtensionInstance = struct {
 
     pub fn init(allocator: std.mem.Allocator, manifest: Manifest) !ExtensionInstance {
         SubsystemMemoryTracker.global.recordAlloc(.ExtensionRuntime, @sizeOf(ExtensionInstance));
-        const ext_id = manifest.id orelse "unnamed-extension";
+        const ext_id = if (manifest.extension_id.len > 0) manifest.extension_id else "unnamed-extension";
         const is_adn = std.mem.indexOf(u8, ext_id, "adnauseam") != null or
             std.mem.indexOf(u8, manifest.name, "AdNauseam") != null;
 
@@ -226,7 +226,8 @@ pub const ExtensionManager = struct {
     }
 
     pub fn registerFromPackage(self: *ExtensionManager, pkg: *XPIPackage) !*ExtensionInstance {
-        return self.registerExtension(pkg.manifest);
+        const cloned_manifest = try pkg.manifest.clone(self.allocator);
+        return self.registerExtension(cloned_manifest);
     }
 
     pub fn interceptUrl(self: *ExtensionManager, url: []const u8, origin_domain: []const u8) BlockingResponse {

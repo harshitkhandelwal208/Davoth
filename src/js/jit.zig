@@ -339,7 +339,7 @@ test "baseline x86-64 jit arithmetic execution" {
     var locals: [16]JSValue = undefined;
     var stack: [128]JSValue = undefined;
 
-    const dummy_vm: usize = 0;
+    var dummy_vm: usize = 0;
     const result = func(@ptrCast(&dummy_vm), &code, &locals, &stack);
 
     try std.testing.expectEqual(@as(f64, 42.0), result.toFloat64());

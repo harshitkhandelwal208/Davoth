@@ -103,8 +103,8 @@ fn findEOCD(zip_bytes: []const u8) !usize {
 /// Extracts a single entry from a ZIP buffer into memory
 pub fn extractFile(allocator: std.mem.Allocator, zip_bytes: []const u8, target_path: []const u8) ![]u8 {
     const eocd = try findEOCD(zip_bytes);
-    const cd_records = std.mem.readInt(u16, zip_bytes[eocd + 10 .. eocd + 12], .little);
-    const cd_offset = std.mem.readInt(u32, zip_bytes[eocd + 16 .. eocd + 20], .little);
+    const cd_records = std.mem.readInt(u16, zip_bytes[eocd + 10 ..][0..2], .little);
+    const cd_offset = std.mem.readInt(u32, zip_bytes[eocd + 16 ..][0..4], .little);
 
     if (cd_offset >= zip_bytes.len) return XpiError.InvalidZipArchive;
 
@@ -115,13 +115,13 @@ pub fn extractFile(allocator: std.mem.Allocator, zip_bytes: []const u8, target_p
             break;
         }
 
-        const comp_method = std.mem.readInt(u16, zip_bytes[cur + 10 .. cur + 12], .little);
-        const comp_size = std.mem.readInt(u32, zip_bytes[cur + 20 .. cur + 24], .little);
-        const uncomp_size = std.mem.readInt(u32, zip_bytes[cur + 24 .. cur + 28], .little);
-        const name_len = std.mem.readInt(u16, zip_bytes[cur + 28 .. cur + 30], .little);
-        const extra_len = std.mem.readInt(u16, zip_bytes[cur + 30 .. cur + 32], .little);
-        const comm_len = std.mem.readInt(u16, zip_bytes[cur + 32 .. cur + 34], .little);
-        const local_offset = std.mem.readInt(u32, zip_bytes[cur + 42 .. cur + 46], .little);
+        const comp_method = std.mem.readInt(u16, zip_bytes[cur + 10 ..][0..2], .little);
+        const comp_size = std.mem.readInt(u32, zip_bytes[cur + 20 ..][0..4], .little);
+        const uncomp_size = std.mem.readInt(u32, zip_bytes[cur + 24 ..][0..4], .little);
+        const name_len = std.mem.readInt(u16, zip_bytes[cur + 28 ..][0..2], .little);
+        const extra_len = std.mem.readInt(u16, zip_bytes[cur + 30 ..][0..2], .little);
+        const comm_len = std.mem.readInt(u16, zip_bytes[cur + 32 ..][0..2], .little);
+        const local_offset = std.mem.readInt(u32, zip_bytes[cur + 42 ..][0..4], .little);
 
         if (cur + 46 + name_len > zip_bytes.len) return XpiError.InvalidZipArchive;
         const filename = zip_bytes[cur + 46 .. cur + 46 + name_len];
@@ -133,8 +133,8 @@ pub fn extractFile(allocator: std.mem.Allocator, zip_bytes: []const u8, target_p
                 return XpiError.InvalidZipArchive;
             }
 
-            const lh_name_len = std.mem.readInt(u16, zip_bytes[local_offset + 26 .. local_offset + 28], .little);
-            const lh_extra_len = std.mem.readInt(u16, zip_bytes[local_offset + 28 .. local_offset + 30], .little);
+            const lh_name_len = std.mem.readInt(u16, zip_bytes[local_offset + 26 ..][0..2], .little);
+            const lh_extra_len = std.mem.readInt(u16, zip_bytes[local_offset + 28 ..][0..2], .little);
             const data_start = local_offset + 30 + lh_name_len + lh_extra_len;
 
             if (data_start + comp_size > zip_bytes.len) return XpiError.InvalidZipArchive;
