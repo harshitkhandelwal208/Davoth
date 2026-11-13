@@ -331,3 +331,47 @@ test "tab manager background hibernation with tile cache shedding and madvise" {
     try std.testing.expect(reload);
     try std.testing.expectEqual(TabState.Active, mgr.tabs.items[0].state);
 }
+
+test "tab manager 100 concurrent tabs hibernation and leak-free memory reclamation" {
+    const allocator = std.testing.allocator;
+    var mgr = TabManager.init(allocator);
+    defer mgr.deinit();
+
+    // Allocate 100 concurrent tabs
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var url_buf: [48]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buf, "https://davoth.org/tab/{d}", .{i});
+        var title_buf: [32]u8 = undefined;
+        const title = try std.fmt.bufPrint(&title_buf, "Tab {d}", .{i});
+
+        const tc = try allocator.create(TileCache);
+        tc.* = try TileCache.init(allocator, 1024, 768);
+
+        const doc = try Node.create(allocator, .Document, @enumFromInt(0));
+        const body = try Node.create(allocator, .Element, @enumFromInt(1));
+        try doc.appendChild(allocator, body);
+
+        _ = try mgr.newTabWithContent(url, title, .Default, doc, tc);
+    }
+
+    try std.testing.expectEqual(@as(usize, 100), mgr.tabs.items.len);
+
+    // Hibernate all 99 background tabs
+    const hibernated = mgr.hibernateAllBackgroundTabs();
+    try std.testing.expectEqual(@as(usize, 99), hibernated);
+
+    // Verify background tabs are hibernated and active tab is preserved
+    try std.testing.expectEqual(TabState.Active, mgr.tabs.items[99].state);
+    try std.testing.expect(mgr.tabs.items[99].tile_cache != null);
+    try std.testing.expect(mgr.tabs.items[99].document != null);
+
+    try std.testing.expectEqual(TabState.Hibernated, mgr.tabs.items[0].state);
+    try std.testing.expect(mgr.tabs.items[0].tile_cache == null);
+    try std.testing.expect(mgr.tabs.items[0].document == null);
+
+    // Reactivate a hibernated tab
+    const needs_reload = mgr.activateTab(0);
+    try std.testing.expect(needs_reload);
+    try std.testing.expectEqual(TabState.Active, mgr.tabs.items[0].state);
+}
