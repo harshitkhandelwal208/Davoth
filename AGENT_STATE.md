@@ -45,3 +45,9 @@
   - Implemented LRU cache quota trimming with `trimToSize` in `BoundedCache` with accurate delta accounting.
   - Implemented heap deflation via `malloc_trim(0)`.
   - Verified base USS remains light at ~19-20 MB.
+- [x] Phase 2: Full Firefox Parity Subsystems & 50-Tab Hibernation:
+  - Subsystem 1: Downloads Manager (`src/net/downloads.zig` & `src/ui/downloads_panel.zig`) with chunked multithreading, pause/resume/cancel, speed/ETA tracking, MIME sniffing, and SQLite persistence.
+  - Subsystem 2: Reader Mode Engine (`src/ui/reader_mode.zig`) with Mozilla Readability extraction, clutter removal, Light/Sepia/Dark themes, typography controls, and reading time estimation.
+  - Subsystem 3: Multi-Account Container Tabs UI (`src/ui/containers_ui.zig`) with color strips, badge pills, and strict isolated Cookie and WebStorage partitions.
+  - Subsystem 4: Developer Tools Inspector (`src/devtools/`) with DOM hierarchy tree inspector, element highlighter, computed CSS styles, live rule editor, network waterfall timeline, and JS console REPL.
+  - Subsystem 5: 50-Tab Background Memory Hibernation & Stress Benchmark: automatic hibernation for inactive background tabs (>30s), tile cache shedding, kernel heap deflation, and `--bench-50tabs` CLI flag verifying 50 tabs consume < 15 MB USS (target < 45 MB).
