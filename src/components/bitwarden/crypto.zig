@@ -374,6 +374,7 @@ test "bitwarden authenticated cipherstring encryption, MAC verification and decr
     // Verify MAC tampering is rejected
     var tampered = try allocator.dupe(u8, cipher_str);
     defer allocator.free(tampered);
-    tampered[tampered.len - 3] ^= 0x01; // flip a bit in MAC
+    const last_char = tampered[tampered.len - 2];
+    tampered[tampered.len - 2] = if (last_char == 'A') 'B' else 'A';
     try std.testing.expectError(error.MacVerificationFailed, decryptCipherString(allocator, tampered, &keys));
 }
