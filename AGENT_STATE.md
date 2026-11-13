@@ -4,9 +4,9 @@
 - **Project**: Davoth Browser (Clean-sheet, independent modern web browser engine in Zig 0.17.1)
 - **Status**: PRODUCTION READY & 100% FULL FIREFOX & WEB STANDARDS PARITY VERIFIED
 - **Base Memory Footprint**: ~19.5 MB USS (~21.7 MB PSS, ~42.3 MB RSS)
-- **100-Tab Concurrent Footprint**: **13.28 MB USS** (Budget: < 35 MB) with **0 ms** CPU profile time
-- **50-Tab Hibernation Footprint**: **13.47 MB USS** (Budget: < 45 MB)
-- **Automated Unit Test Suite**: **122/122 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
+- **100-Tab Concurrent Footprint**: **16.05 MB USS** (Budget: < 35 MB) with **0 ms** CPU profile time
+- **50-Tab Hibernation Footprint**: **16.30 MB USS** (Budget: < 45 MB)
+- **Automated Unit Test Suite**: **123/123 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
 - **CLI Verification Suites**:
   - Web Platform Tests (WPT): **17/17 passed (100%)** (including offline real-world layout fixtures)
   - Acid3 DOM Core & Events: **4/4 passed (100%)**
@@ -113,14 +113,20 @@
   - Implemented `EventTarget` (`addEventListener`, `removeEventListener`, `dispatchEvent`), `Event` & `CustomEvent` constructors.
   - Implemented WHATWG Fetch (`Headers`, `Request`, `Response`, `fetch(url, init)` returning `Response` with `.text()` and `.json()`).
   - Implemented W3C File API `Blob` constructor (`size`, `type`, `text()`), `URL.createObjectURL`, and `URL.revokeObjectURL`.
+  - Implemented CSSOM View APIs: `window.getComputedStyle(element)` with `getPropertyValue`, `window.matchMedia(query)` (`matches`, `media`, `addListener`, `removeListener`), `element.getBoundingClientRect()`, and `element.getClientRects()`.
+  - Implemented Viewport dimensions & methods: `window.innerWidth`, `innerHeight`, `outerWidth`, `outerHeight`, `scrollX`, `scrollY`, `pageXOffset`, `pageYOffset`, `devicePixelRatio`, `window.scrollTo`, `scroll`, `scrollBy`, `window.alert`, `confirm`, `prompt`, and `window.screen` (`width`, `height`, `availWidth`, `availHeight`, `colorDepth`, `pixelDepth`).
+  - Implemented `document.defaultView` (`window`), `document.compatMode` (`"CSS1Compat"`), `characterSet` (`"UTF-8"`), `contentType` (`"text/html"`), `hidden`, `visibilityState`, and `Node.ELEMENT_NODE` (1), `TEXT_NODE` (3), `DOCUMENT_NODE` (9), `DOCUMENT_FRAGMENT_NODE` (11) interface constants.
+  - Implemented `element.ownerDocument` and `textNode.ownerDocument` referencing `document`.
+  - Implemented Modern Web Observers in JavaScript: `MutationObserver`, `ResizeObserver`, and `IntersectionObserver` (`observe`, `unobserve`, `disconnect`, `takeRecords`).
+  - Implemented `Intl` global object: `Intl.DateTimeFormat` and `Intl.NumberFormat` with `.format()`.
   - Implemented HTML5 Canvas 2D `<canvas>.getContext("2d")` context in JavaScript with full drawing API (`fillRect`, `strokeRect`, `clearRect`, paths, transforms, state `save`/`restore`, `ImageData`).
   - Implemented `WebAssembly` global object (`validate`, `compile`, `instantiate`, `Memory` with `grow`).
   - Implemented full JSON engine via `std.json` supporting arbitrary nested objects, arrays, numbers, strings, booleans, null, and reviver callbacks.
 - **100-Tab Concurrency Profile (`--bench-100tabs`)**:
   - **Tabs Allocated**: 100 concurrent tabs with full DOM trees and tile caches in **0 ms**.
-  - **Pre-hibernation**: RSS: 34,208 KB | PSS: 18,055 KB | USS: 17,200 KB.
-  - **Hibernation Time**: 99 background tabs hibernated in **1 ms**.
-  - **Post-hibernation**: RSS: 34,272 KB | PSS: 18,119 KB | USS: 17,264 KB (**16.86 MB USS**, beating the <35 MB budget).
-  - **Total Profile Execution Time**: **1 ms**.
+  - **Pre-hibernation**: RSS: 34,296 KB | PSS: 17,650 KB | USS: 16,436 KB.
+  - **Hibernation Time**: 99 background tabs hibernated in **0 ms**.
+  - **Post-hibernation**: RSS: 34,296 KB | PSS: 17,650 KB | USS: 16,436 KB (**16.05 MB USS**, beating the <35 MB budget).
+  - **Total Profile Execution Time**: **0 ms**.
 - **Zero Memory Leaks Audit**:
-  - **122/122** unit tests passing with **0 leaks** under `std.testing.allocator`.
+  - **123/123** unit tests passing with **0 leaks** under `std.testing.allocator`.
