@@ -354,6 +354,18 @@ pub fn initBuiltins(vm: *VM) !void {
     try doc_obj.setProperty(alloc, try table.intern("location"), JSValue.fromObject(loc_obj));
     try doc_obj.setProperty(alloc, try table.intern("cookie"), JSValue.fromStringAtom(try table.intern("")));
     try doc_obj.setProperty(alloc, try table.intern("readyState"), JSValue.fromStringAtom(try table.intern("complete")));
+    try doc_obj.setProperty(alloc, try table.intern("defaultView"), JSValue.fromObject(global));
+    try doc_obj.setProperty(alloc, try table.intern("nodeType"), JSValue.fromInt32(9));
+    try doc_obj.setProperty(alloc, try table.intern("nodeName"), JSValue.fromStringAtom(try table.intern("#document")));
+    try doc_obj.setProperty(alloc, try table.intern("compatMode"), JSValue.fromStringAtom(try table.intern("CSS1Compat")));
+    try doc_obj.setProperty(alloc, try table.intern("characterSet"), JSValue.fromStringAtom(try table.intern("UTF-8")));
+    try doc_obj.setProperty(alloc, try table.intern("contentType"), JSValue.fromStringAtom(try table.intern("text/html")));
+    try doc_obj.setProperty(alloc, try table.intern("hidden"), JSValue.false_val);
+    try doc_obj.setProperty(alloc, try table.intern("visibilityState"), JSValue.fromStringAtom(try table.intern("visible")));
+
+    try body_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
+    try head_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
+    try html_elem.setProperty(alloc, try table.intern("ownerDocument"), JSValue.fromObject(doc_obj));
 
     const create_elem_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateElement, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("createElement"), JSValue.fromObject(create_elem_fn));
@@ -386,6 +398,74 @@ pub fn initBuiltins(vm: *VM) !void {
     try doc_obj.setProperty(alloc, try table.intern("dispatchEvent"), JSValue.fromObject(doc_disp_ev_fn));
 
     try global.setProperty(alloc, try table.intern("document"), JSValue.fromObject(doc_obj));
+
+    // Window viewport dimensions & properties
+    try global.setProperty(alloc, try table.intern("innerWidth"), JSValue.fromInt32(1280));
+    try global.setProperty(alloc, try table.intern("innerHeight"), JSValue.fromInt32(720));
+    try global.setProperty(alloc, try table.intern("outerWidth"), JSValue.fromInt32(1280));
+    try global.setProperty(alloc, try table.intern("outerHeight"), JSValue.fromInt32(720));
+    try global.setProperty(alloc, try table.intern("scrollX"), JSValue.fromInt32(0));
+    try global.setProperty(alloc, try table.intern("scrollY"), JSValue.fromInt32(0));
+    try global.setProperty(alloc, try table.intern("pageXOffset"), JSValue.fromInt32(0));
+    try global.setProperty(alloc, try table.intern("pageYOffset"), JSValue.fromInt32(0));
+    try global.setProperty(alloc, try table.intern("devicePixelRatio"), JSValue.fromFloat64(1.0));
+
+    // Window scroll methods
+    const scroll_fn = try vm.gc.allocateFunction(null, nativeWindowScrollTo, null);
+    try global.setProperty(alloc, try table.intern("scrollTo"), JSValue.fromObject(scroll_fn));
+    try global.setProperty(alloc, try table.intern("scroll"), JSValue.fromObject(scroll_fn));
+    try global.setProperty(alloc, try table.intern("scrollBy"), JSValue.fromObject(scroll_fn));
+
+    // Window dialogs
+    const alert_fn = try vm.gc.allocateFunction(null, nativeWindowAlert, null);
+    try global.setProperty(alloc, try table.intern("alert"), JSValue.fromObject(alert_fn));
+    const confirm_fn = try vm.gc.allocateFunction(null, nativeWindowConfirm, null);
+    try global.setProperty(alloc, try table.intern("confirm"), JSValue.fromObject(confirm_fn));
+    const prompt_fn = try vm.gc.allocateFunction(null, nativeWindowPrompt, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("prompt"), JSValue.fromObject(prompt_fn));
+
+    // Screen object
+    const screen_obj = try vm.gc.allocateObject(null);
+    try screen_obj.setProperty(alloc, try table.intern("width"), JSValue.fromInt32(1920));
+    try screen_obj.setProperty(alloc, try table.intern("height"), JSValue.fromInt32(1080));
+    try screen_obj.setProperty(alloc, try table.intern("availWidth"), JSValue.fromInt32(1920));
+    try screen_obj.setProperty(alloc, try table.intern("availHeight"), JSValue.fromInt32(1040));
+    try screen_obj.setProperty(alloc, try table.intern("colorDepth"), JSValue.fromInt32(24));
+    try screen_obj.setProperty(alloc, try table.intern("pixelDepth"), JSValue.fromInt32(24));
+    try global.setProperty(alloc, try table.intern("screen"), JSValue.fromObject(screen_obj));
+
+    // getComputedStyle & matchMedia
+    const get_cs_fn = try vm.gc.allocateFunction(null, nativeGetComputedStyle, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("getComputedStyle"), JSValue.fromObject(get_cs_fn));
+    const match_media_fn = try vm.gc.allocateFunction(null, nativeMatchMedia, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("matchMedia"), JSValue.fromObject(match_media_fn));
+
+    // Node interface constants
+    const node_ctor = try vm.gc.allocateObject(null);
+    try node_ctor.setProperty(alloc, try table.intern("ELEMENT_NODE"), JSValue.fromInt32(1));
+    try node_ctor.setProperty(alloc, try table.intern("ATTRIBUTE_NODE"), JSValue.fromInt32(2));
+    try node_ctor.setProperty(alloc, try table.intern("TEXT_NODE"), JSValue.fromInt32(3));
+    try node_ctor.setProperty(alloc, try table.intern("CDATA_SECTION_NODE"), JSValue.fromInt32(4));
+    try node_ctor.setProperty(alloc, try table.intern("COMMENT_NODE"), JSValue.fromInt32(8));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_NODE"), JSValue.fromInt32(9));
+    try node_ctor.setProperty(alloc, try table.intern("DOCUMENT_FRAGMENT_NODE"), JSValue.fromInt32(11));
+    try global.setProperty(alloc, try table.intern("Node"), JSValue.fromObject(node_ctor));
+
+    // Modern Observers: MutationObserver, ResizeObserver, IntersectionObserver
+    const mut_obs_ctor = try vm.gc.allocateFunction(null, nativeMutationObserverConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("MutationObserver"), JSValue.fromObject(mut_obs_ctor));
+    const rsz_obs_ctor = try vm.gc.allocateFunction(null, nativeResizeObserverConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("ResizeObserver"), JSValue.fromObject(rsz_obs_ctor));
+    const int_obs_ctor = try vm.gc.allocateFunction(null, nativeIntersectionObserverConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("IntersectionObserver"), JSValue.fromObject(int_obs_ctor));
+
+    // Intl global object
+    const intl_obj = try vm.gc.allocateObject(null);
+    const dtf_ctor = try vm.gc.allocateFunction(null, nativeDateTimeFormatConstructor, @ptrCast(vm));
+    try intl_obj.setProperty(alloc, try table.intern("DateTimeFormat"), JSValue.fromObject(dtf_ctor));
+    const nf_ctor = try vm.gc.allocateFunction(null, nativeNumberFormatConstructor, @ptrCast(vm));
+    try intl_obj.setProperty(alloc, try table.intern("NumberFormat"), JSValue.fromObject(nf_ctor));
+    try global.setProperty(alloc, try table.intern("Intl"), JSValue.fromObject(intl_obj));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -1820,6 +1900,12 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     const disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("dispatchEvent"), JSValue.fromObject(disp_ev_fn));
 
+    const get_bcr_fn = try vm.gc.allocateFunction(null, nativeElementGetBoundingClientRect, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getBoundingClientRect"), JSValue.fromObject(get_bcr_fn));
+
+    const get_cr_fn = try vm.gc.allocateFunction(null, nativeElementGetClientRects, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getClientRects"), JSValue.fromObject(get_cr_fn));
+
     if (std.ascii.eqlIgnoreCase(tag, "canvas")) {
         const get_ctx_fn = try vm.gc.allocateFunction(null, nativeCanvasGetContext, @ptrCast(vm));
         try inst.setProperty(vm.allocator, try vm.atom_table.intern("getContext"), JSValue.fromObject(get_ctx_fn));
@@ -2009,7 +2095,7 @@ fn nativeClassListToggle(ctx: *anyopaque, this_val: JSValue, args: []const JSVal
     }
 }
 
-fn nativeDocumentCreateElement(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+fn nativeDocumentCreateElement(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     if (args.len == 0) return JSValue.undefined_val;
 
@@ -2019,6 +2105,7 @@ fn nativeDocumentCreateElement(ctx: *anyopaque, _: JSValue, args: []const JSValu
     };
 
     const elem = try createJsElement(vm, tag_str);
+    try elem.setProperty(vm.allocator, try vm.atom_table.intern("ownerDocument"), this_val);
     return JSValue.fromObject(elem);
 }
 
@@ -2214,7 +2301,7 @@ fn nativeDocumentQuerySelectorAll(ctx: *anyopaque, this_val: JSValue, args: []co
     return JSValue.fromObject(arr);
 }
 
-fn nativeDocumentCreateTextNode(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+fn nativeDocumentCreateTextNode(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     const text_str = if (args.len > 0 and args[0].isString())
         args[0]
@@ -2226,6 +2313,7 @@ fn nativeDocumentCreateTextNode(ctx: *anyopaque, _: JSValue, args: []const JSVal
     try text_node.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#text")));
     try text_node.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), text_str);
     try text_node.setProperty(vm.allocator, try vm.atom_table.intern("nodeValue"), text_str);
+    try text_node.setProperty(vm.allocator, try vm.atom_table.intern("ownerDocument"), this_val);
     return JSValue.fromObject(text_node);
 }
 
@@ -2549,6 +2637,191 @@ fn nativeDocumentGetElementsByClassName(ctx: *anyopaque, this_val: JSValue, args
     const body_atom = try vm.atom_table.intern("body");
     const body_val = doc_obj.getProperty(body_atom) orelse return JSValue.undefined_val;
     return nativeElementGetElementsByClassName(ctx, body_val, args);
+}
+
+fn nativeElementGetBoundingClientRect(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const rect = try vm.gc.allocateObject(null);
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("x"), JSValue.fromFloat64(0.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("y"), JSValue.fromFloat64(0.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("width"), JSValue.fromFloat64(100.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("height"), JSValue.fromFloat64(100.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("top"), JSValue.fromFloat64(0.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("right"), JSValue.fromFloat64(100.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("bottom"), JSValue.fromFloat64(100.0));
+    try rect.setProperty(vm.allocator, try vm.atom_table.intern("left"), JSValue.fromFloat64(0.0));
+    return JSValue.fromObject(rect);
+}
+
+fn nativeElementGetClientRects(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const rect = try nativeElementGetBoundingClientRect(ctx, this_val, args);
+    const arr = try createArray(vm, &[_]JSValue{rect});
+    return JSValue.fromObject(arr);
+}
+
+fn nativeGetComputedStyle(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const cs = try vm.gc.allocateObject(null);
+    const target = if (args.len > 0 and args[0].isObject()) args[0].toObject().? else null;
+
+    if (target) |tgt| {
+        if (tgt.getProperty(try vm.atom_table.intern("style"))) |style_val| {
+            if (style_val.toObject()) |style_obj| {
+                var entries: std.ArrayList(@import("object.zig").PropertyEntry) = .empty;
+                defer entries.deinit(vm.allocator);
+                try style_obj.getPropertyEntries(vm.allocator, &entries);
+                for (entries.items) |entry| {
+                    try cs.setProperty(vm.allocator, entry.atom, entry.value);
+                }
+            }
+        }
+    }
+
+    const def_display = cs.getProperty(try vm.atom_table.intern("display")) orelse JSValue.fromStringAtom(try vm.atom_table.intern("block"));
+    try cs.setProperty(vm.allocator, try vm.atom_table.intern("display"), def_display);
+    const def_visibility = cs.getProperty(try vm.atom_table.intern("visibility")) orelse JSValue.fromStringAtom(try vm.atom_table.intern("visible"));
+    try cs.setProperty(vm.allocator, try vm.atom_table.intern("visibility"), def_visibility);
+    const def_opacity = cs.getProperty(try vm.atom_table.intern("opacity")) orelse JSValue.fromStringAtom(try vm.atom_table.intern("1"));
+    try cs.setProperty(vm.allocator, try vm.atom_table.intern("opacity"), def_opacity);
+
+    const get_pv_fn = try vm.gc.allocateFunction(null, nativeComputedStyleGetPropertyValue, @ptrCast(vm));
+    try cs.setProperty(vm.allocator, try vm.atom_table.intern("getPropertyValue"), JSValue.fromObject(get_pv_fn));
+    return JSValue.fromObject(cs);
+}
+
+fn nativeComputedStyleGetPropertyValue(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    if (args.len == 0 or !args[0].isString()) return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    const prop_name = vm.atom_table.get(args[0].toStringAtom());
+    const prop_atom = try vm.atom_table.intern(prop_name);
+    return inst.getProperty(prop_atom) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeMatchMedia(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const mql = try vm.gc.allocateObject(null);
+    var media_str: []const u8 = "";
+    if (args.len > 0 and args[0].isString()) {
+        media_str = vm.atom_table.get(args[0].toStringAtom());
+    }
+    try mql.setProperty(vm.allocator, try vm.atom_table.intern("media"), JSValue.fromStringAtom(try vm.atom_table.intern(media_str)));
+    var matches = true;
+    if (std.mem.indexOf(u8, media_str, "not all") != null) matches = false;
+    try mql.setProperty(vm.allocator, try vm.atom_table.intern("matches"), if (matches) JSValue.true_val else JSValue.false_val);
+
+    const add_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetAddEventListener, @ptrCast(vm));
+    try mql.setProperty(vm.allocator, try vm.atom_table.intern("addEventListener"), JSValue.fromObject(add_ev_fn));
+    try mql.setProperty(vm.allocator, try vm.atom_table.intern("addListener"), JSValue.fromObject(add_ev_fn));
+    const rem_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetRemoveEventListener, @ptrCast(vm));
+    try mql.setProperty(vm.allocator, try vm.atom_table.intern("removeEventListener"), JSValue.fromObject(rem_ev_fn));
+    try mql.setProperty(vm.allocator, try vm.atom_table.intern("removeListener"), JSValue.fromObject(rem_ev_fn));
+
+    return JSValue.fromObject(mql);
+}
+
+fn nativeWindowScrollTo(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeWindowAlert(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeWindowConfirm(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.true_val;
+}
+
+fn nativeWindowPrompt(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len > 1 and args[1].isString()) return args[1];
+    return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeMutationObserverConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const obs = try vm.gc.allocateObject(null);
+    if (args.len > 0) {
+        try obs.setProperty(vm.allocator, try vm.atom_table.intern("_cb"), args[0]);
+    }
+    const observe_fn = try vm.gc.allocateFunction(null, nativeObserverNoop, @ptrCast(vm));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("observe"), JSValue.fromObject(observe_fn));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("disconnect"), JSValue.fromObject(observe_fn));
+    const take_fn = try vm.gc.allocateFunction(null, nativeObserverTakeRecords, @ptrCast(vm));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("takeRecords"), JSValue.fromObject(take_fn));
+    return JSValue.fromObject(obs);
+}
+
+fn nativeResizeObserverConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const obs = try vm.gc.allocateObject(null);
+    if (args.len > 0) {
+        try obs.setProperty(vm.allocator, try vm.atom_table.intern("_cb"), args[0]);
+    }
+    const observe_fn = try vm.gc.allocateFunction(null, nativeObserverNoop, @ptrCast(vm));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("observe"), JSValue.fromObject(observe_fn));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("unobserve"), JSValue.fromObject(observe_fn));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("disconnect"), JSValue.fromObject(observe_fn));
+    return JSValue.fromObject(obs);
+}
+
+fn nativeIntersectionObserverConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const obs = try vm.gc.allocateObject(null);
+    if (args.len > 0) {
+        try obs.setProperty(vm.allocator, try vm.atom_table.intern("_cb"), args[0]);
+    }
+    const observe_fn = try vm.gc.allocateFunction(null, nativeObserverNoop, @ptrCast(vm));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("observe"), JSValue.fromObject(observe_fn));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("unobserve"), JSValue.fromObject(observe_fn));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("disconnect"), JSValue.fromObject(observe_fn));
+    const take_fn = try vm.gc.allocateFunction(null, nativeObserverTakeRecords, @ptrCast(vm));
+    try obs.setProperty(vm.allocator, try vm.atom_table.intern("takeRecords"), JSValue.fromObject(take_fn));
+    return JSValue.fromObject(obs);
+}
+
+fn nativeObserverNoop(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeObserverTakeRecords(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const empty_arr = try createArray(vm, &[_]JSValue{});
+    return JSValue.fromObject(empty_arr);
+}
+
+fn nativeDateTimeFormatConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const dtf = try vm.gc.allocateObject(null);
+    const fmt_fn = try vm.gc.allocateFunction(null, nativeDateTimeFormatFormat, @ptrCast(vm));
+    try dtf.setProperty(vm.allocator, try vm.atom_table.intern("format"), JSValue.fromObject(fmt_fn));
+    return JSValue.fromObject(dtf);
+}
+
+fn nativeDateTimeFormatFormat(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    return JSValue.fromStringAtom(try vm.atom_table.intern("1/1/2026, 12:00:00 AM"));
+}
+
+fn nativeNumberFormatConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const nf = try vm.gc.allocateObject(null);
+    const fmt_fn = try vm.gc.allocateFunction(null, nativeNumberFormatFormat, @ptrCast(vm));
+    try nf.setProperty(vm.allocator, try vm.atom_table.intern("format"), JSValue.fromObject(fmt_fn));
+    return JSValue.fromObject(nf);
+}
+
+fn nativeNumberFormatFormat(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0) return JSValue.fromStringAtom(try vm.atom_table.intern("0"));
+    var buf: [64]u8 = undefined;
+    const str = switch (args[0].getType()) {
+        .Int32 => std.fmt.bufPrint(&buf, "{d}", .{args[0].toInt32()}) catch "0",
+        .Float64 => std.fmt.bufPrint(&buf, "{d}", .{args[0].toFloat64()}) catch "0",
+        else => "0",
+    };
+    return JSValue.fromStringAtom(try vm.atom_table.intern(str));
 }
 
 fn nativeCanvasGetContext(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -3749,4 +4022,67 @@ test "universal web standards: blob createObjectURL document readyState and elem
     const res3 = try vm.execute(&code3);
     try std.testing.expect(res3.isBoolean());
     try std.testing.expect(res3.toBoolean());
+}
+
+test "universal web standards: getComputedStyle matchMedia node constants observers and intl" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. getComputedStyle, getBoundingClientRect, matchMedia, and ownerDocument
+    const script_cssom =
+        \\let el = document.createElement('div');
+        \\let isDoc = (el.ownerDocument === document);
+        \\let defView = (document.defaultView === window);
+        \\let isElemNode = (Node.ELEMENT_NODE === 1);
+        \\let cs = window.getComputedStyle(el);
+        \\let disp = cs.getPropertyValue('display');
+        \\let rect = el.getBoundingClientRect();
+        \\let mql = window.matchMedia('(min-width: 600px)');
+        \\return isDoc && defView && isElemNode && (rect.width === 100);
+    ;
+    var p1 = Parser.init(allocator, script_cssom);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_cssom");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. MutationObserver, ResizeObserver, IntersectionObserver, and Intl
+    const script_obs =
+        \\let mo = new MutationObserver(null);
+        \\let ro = new ResizeObserver(null);
+        \\let io = new IntersectionObserver(null);
+        \\let dtf = new Intl.DateTimeFormat();
+        \\let nf = new Intl.NumberFormat();
+        \\let numStr = nf.format(42);
+        \\return numStr;
+    ;
+    var p2 = Parser.init(allocator, script_obs);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_obs");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isString());
+    try std.testing.expectEqualStrings("42", atom_table.get(res2.toStringAtom()));
 }
