@@ -261,6 +261,24 @@ pub const VM = struct {
                     const a = self.pop();
                     try self.push(JSValue.fromBoolean(a.toFloat64() >= b.toFloat64()));
                 },
+                .LogicalAnd => {
+                    const b = self.pop();
+                    const a = self.pop();
+                    if (!a.toBoolean()) {
+                        try self.push(a);
+                    } else {
+                        try self.push(b);
+                    }
+                },
+                .LogicalOr => {
+                    const b = self.pop();
+                    const a = self.pop();
+                    if (a.toBoolean()) {
+                        try self.push(a);
+                    } else {
+                        try self.push(b);
+                    }
+                },
                 .Not => {
                     const a = self.pop();
                     try self.push(JSValue.fromBoolean(!a.toBoolean()));

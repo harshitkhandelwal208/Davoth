@@ -40,6 +40,8 @@ pub const OpCode = enum(u8) {
     CreateFunction = 31,
     CreateObject = 32,
     CreateArray = 33,
+    LogicalAnd = 34,
+    LogicalOr = 35,
 };
 
 pub const CodeBlock = struct {
@@ -215,6 +217,8 @@ pub const BytecodeCompiler = struct {
                     .LessEqual => try self.code.emitOp(.LessEqual),
                     .Greater => try self.code.emitOp(.Greater),
                     .GreaterEqual => try self.code.emitOp(.GreaterEqual),
+                    .LogicalAnd => try self.code.emitOp(.LogicalAnd),
+                    .LogicalOr => try self.code.emitOp(.LogicalOr),
                     else => try self.code.emitOp(.Add),
                 }
             },

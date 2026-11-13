@@ -211,7 +211,15 @@ pub fn initBuiltins(vm: *VM) !void {
     try global.setProperty(alloc, try table.intern("URLSearchParams"), JSValue.fromObject(url_params_fn));
 
     const url_fn = try vm.gc.allocateFunction(null, nativeUrlConstructor, @ptrCast(vm));
+    const create_obj_url_fn = try vm.gc.allocateFunction(null, nativeUrlCreateObjectURL, @ptrCast(vm));
+    try url_fn.setProperty(alloc, try table.intern("createObjectURL"), JSValue.fromObject(create_obj_url_fn));
+    const revoke_obj_url_fn = try vm.gc.allocateFunction(null, nativeUrlRevokeObjectURL, @ptrCast(vm));
+    try url_fn.setProperty(alloc, try table.intern("revokeObjectURL"), JSValue.fromObject(revoke_obj_url_fn));
     try global.setProperty(alloc, try table.intern("URL"), JSValue.fromObject(url_fn));
+
+    // Blob Web API
+    const blob_ctor = try vm.gc.allocateFunction(null, nativeBlobConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("Blob"), JSValue.fromObject(blob_ctor));
 
     // AbortController & AbortSignal Web APIs
     const abort_ctrl_fn = try vm.gc.allocateFunction(null, nativeAbortControllerConstructor, @ptrCast(vm));
@@ -337,11 +345,15 @@ pub fn initBuiltins(vm: *VM) !void {
     const doc_obj = try vm.gc.allocateObject(null);
     const body_elem = try createJsElement(vm, "body");
     const head_elem = try createJsElement(vm, "head");
+    const html_elem = try createJsElement(vm, "html");
 
     try doc_obj.setProperty(alloc, try table.intern("body"), JSValue.fromObject(body_elem));
     try doc_obj.setProperty(alloc, try table.intern("head"), JSValue.fromObject(head_elem));
+    try doc_obj.setProperty(alloc, try table.intern("documentElement"), JSValue.fromObject(html_elem));
     try doc_obj.setProperty(alloc, try table.intern("title"), JSValue.fromStringAtom(try table.intern("Davoth Browser")));
     try doc_obj.setProperty(alloc, try table.intern("location"), JSValue.fromObject(loc_obj));
+    try doc_obj.setProperty(alloc, try table.intern("cookie"), JSValue.fromStringAtom(try table.intern("")));
+    try doc_obj.setProperty(alloc, try table.intern("readyState"), JSValue.fromStringAtom(try table.intern("complete")));
 
     const create_elem_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateElement, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("createElement"), JSValue.fromObject(create_elem_fn));
@@ -354,6 +366,12 @@ pub fn initBuiltins(vm: *VM) !void {
 
     const doc_qsa_fn = try vm.gc.allocateFunction(null, nativeDocumentQuerySelectorAll, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("querySelectorAll"), JSValue.fromObject(doc_qsa_fn));
+
+    const doc_get_tag_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByTagName, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementsByTagName"), JSValue.fromObject(doc_get_tag_fn));
+
+    const doc_get_cls_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByClassName, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementsByClassName"), JSValue.fromObject(doc_get_cls_fn));
 
     const doc_create_text_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateTextNode, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("createTextNode"), JSValue.fromObject(doc_create_text_fn));
@@ -1503,6 +1521,71 @@ fn nativeUrlToString(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) any
     return obj.getProperty(href_atom) orelse JSValue.undefined_val;
 }
 
+var g_blob_counter: u64 = 1;
+
+fn nativeUrlCreateObjectURL(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    var buf: [64]u8 = undefined;
+    const count = g_blob_counter;
+    g_blob_counter += 1;
+    const url_str = std.fmt.bufPrint(&buf, "blob:davoth/{x}", .{count}) catch "blob:davoth/1";
+    const atom = try vm.atom_table.intern(url_str);
+    return JSValue.fromStringAtom(atom);
+}
+
+fn nativeUrlRevokeObjectURL(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeBlobConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const blob = try vm.gc.allocateObject(null);
+
+    var mime_type: []const u8 = "";
+    if (args.len > 1 and args[1].isObject()) {
+        const opt = args[1].toObject().?;
+        if (opt.getProperty(try vm.atom_table.intern("type"))) |type_val| {
+            if (type_val.isString()) {
+                mime_type = vm.atom_table.get(type_val.toStringAtom());
+            }
+        }
+    }
+
+    var total_size: usize = 0;
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(vm.allocator);
+
+    if (args.len > 0 and args[0].isObject()) {
+        const parts_obj = args[0].toObject().?;
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, parts_obj, &items);
+        for (items.items) |item| {
+            if (item.isString()) {
+                const s = vm.atom_table.get(item.toStringAtom());
+                try content.appendSlice(vm.allocator, s);
+                total_size += s.len;
+            }
+        }
+    }
+
+    try blob.setProperty(vm.allocator, try vm.atom_table.intern("size"), JSValue.fromInt32(@intCast(total_size)));
+    try blob.setProperty(vm.allocator, try vm.atom_table.intern("type"), JSValue.fromStringAtom(try vm.atom_table.intern(mime_type)));
+    try blob.setProperty(vm.allocator, try vm.atom_table.intern("_data"), JSValue.fromStringAtom(try vm.atom_table.intern(content.items)));
+
+    const text_fn = try vm.gc.allocateFunction(null, nativeBlobText, @ptrCast(vm));
+    try blob.setProperty(vm.allocator, try vm.atom_table.intern("text"), JSValue.fromObject(text_fn));
+
+    return JSValue.fromObject(blob);
+}
+
+fn nativeBlobText(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    const data_atom = try vm.atom_table.intern("_data");
+    return inst.getProperty(data_atom) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
 // AbortSignal and AbortController Web APIs
 fn nativeAbortSignalConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
@@ -1709,6 +1792,24 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
 
     const click_fn = try vm.gc.allocateFunction(null, nativeElementClick, @ptrCast(vm));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("click"), JSValue.fromObject(click_fn));
+
+    const remove_fn = try vm.gc.allocateFunction(null, nativeElementRemove, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("remove"), JSValue.fromObject(remove_fn));
+
+    const contains_fn = try vm.gc.allocateFunction(null, nativeElementContains, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("contains"), JSValue.fromObject(contains_fn));
+
+    const clone_node_fn = try vm.gc.allocateFunction(null, nativeElementCloneNode, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("cloneNode"), JSValue.fromObject(clone_node_fn));
+
+    const rep_child_fn = try vm.gc.allocateFunction(null, nativeElementReplaceChild, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("replaceChild"), JSValue.fromObject(rep_child_fn));
+
+    const get_by_tag_fn = try vm.gc.allocateFunction(null, nativeElementGetElementsByTagName, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getElementsByTagName"), JSValue.fromObject(get_by_tag_fn));
+
+    const get_by_cls_fn = try vm.gc.allocateFunction(null, nativeElementGetElementsByClassName, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getElementsByClassName"), JSValue.fromObject(get_by_cls_fn));
 
     const add_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetAddEventListener, @ptrCast(vm));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("addEventListener"), JSValue.fromObject(add_ev_fn));
@@ -2272,6 +2373,182 @@ fn nativeElementClick(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) an
         JSValue.fromStringAtom(try vm.atom_table.intern("click")),
     });
     return try nativeEventTargetDispatchEvent(ctx, this_val, &[_]JSValue{click_ev});
+}
+
+fn nativeElementRemove(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const parent_val = inst.getProperty(try vm.atom_table.intern("parentNode")) orelse JSValue.null_val;
+    if (parent_val.toObject()) |_| {
+        return try nativeElementRemoveChild(ctx, parent_val, &[_]JSValue{this_val});
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeElementContains(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.false_val;
+    if (args.len == 0 or !args[0].isObject()) return JSValue.false_val;
+    const target = args[0].toObject().?;
+    if (inst == target) return JSValue.true_val;
+
+    const children_atom = try vm.atom_table.intern("_children");
+    const ch_val = inst.getProperty(children_atom) orelse return JSValue.false_val;
+    if (ch_val.toObject()) |arr_obj| {
+        var children_items: std.ArrayList(JSValue) = .empty;
+        defer children_items.deinit(vm.allocator);
+        try getArrayElements(vm, arr_obj, &children_items);
+        for (children_items.items) |child_val| {
+            const res = try nativeElementContains(ctx, child_val, args);
+            if (res.toBoolean()) return JSValue.true_val;
+        }
+    }
+    return JSValue.false_val;
+}
+
+fn nativeElementCloneNode(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.null_val;
+    const tag_atom = try vm.atom_table.intern("tagName");
+    const tag_val = inst.getProperty(tag_atom) orelse JSValue.fromStringAtom(try vm.atom_table.intern("div"));
+    const tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "div";
+    const clone = try createJsElement(vm, tag_str);
+
+    if (inst.getProperty(try vm.atom_table.intern("id"))) |id_val| {
+        try clone.setProperty(vm.allocator, try vm.atom_table.intern("id"), id_val);
+    }
+    if (inst.getProperty(try vm.atom_table.intern("className"))) |cn_val| {
+        try clone.setProperty(vm.allocator, try vm.atom_table.intern("className"), cn_val);
+    }
+
+    const deep = args.len > 0 and args[0].toBoolean();
+    if (deep) {
+        const children_atom = try vm.atom_table.intern("_children");
+        if (inst.getProperty(children_atom)) |ch_val| {
+            if (ch_val.toObject()) |arr_obj| {
+                var items: std.ArrayList(JSValue) = .empty;
+                defer items.deinit(vm.allocator);
+                try getArrayElements(vm, arr_obj, &items);
+                for (items.items) |child_val| {
+                    const cloned_child = try nativeElementCloneNode(ctx, child_val, &[_]JSValue{JSValue.true_val});
+                    _ = try nativeElementAppendChild(ctx, JSValue.fromObject(clone), &[_]JSValue{cloned_child});
+                }
+            }
+        }
+    }
+    return JSValue.fromObject(clone);
+}
+
+fn nativeElementReplaceChild(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    if (args.len < 2 or !args[0].isObject() or !args[1].isObject()) return JSValue.undefined_val;
+    const new_child = args[0];
+    const old_child = args[1];
+
+    _ = try nativeElementInsertBefore(ctx, this_val, &[_]JSValue{ new_child, old_child });
+    _ = try nativeElementRemoveChild(ctx, this_val, &[_]JSValue{old_child});
+    return old_child;
+}
+
+fn collectElementsByTagName(vm: *VM, elem_obj: *JSObject, match_tag: []const u8, out: *std.ArrayList(JSValue)) anyerror!void {
+    const children_atom = try vm.atom_table.intern("_children");
+    const ch_val = elem_obj.getProperty(children_atom) orelse return;
+    if (ch_val.toObject()) |arr_obj| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, arr_obj, &items);
+        for (items.items) |child_val| {
+            if (child_val.toObject()) |child_obj| {
+                const tag_atom = try vm.atom_table.intern("tagName");
+                if (child_obj.getProperty(tag_atom)) |tv| {
+                    if (tv.isString()) {
+                        const s = vm.atom_table.get(tv.toStringAtom());
+                        if (std.mem.eql(u8, match_tag, "*") or std.ascii.eqlIgnoreCase(s, match_tag)) {
+                            try out.append(vm.allocator, child_val);
+                        }
+                    }
+                }
+                try collectElementsByTagName(vm, child_obj, match_tag, out);
+            }
+        }
+    }
+}
+
+fn nativeElementGetElementsByTagName(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isString()) {
+        const empty_arr = try createArray(vm, &[_]JSValue{});
+        return JSValue.fromObject(empty_arr);
+    }
+    const match_tag = vm.atom_table.get(args[0].toStringAtom());
+    var out: std.ArrayList(JSValue) = .empty;
+    defer out.deinit(vm.allocator);
+    try collectElementsByTagName(vm, inst, match_tag, &out);
+    const arr = try createArray(vm, out.items);
+    return JSValue.fromObject(arr);
+}
+
+fn collectElementsByClassName(vm: *VM, elem_obj: *JSObject, match_class: []const u8, out: *std.ArrayList(JSValue)) anyerror!void {
+    const children_atom = try vm.atom_table.intern("_children");
+    const ch_val = elem_obj.getProperty(children_atom) orelse return;
+    if (ch_val.toObject()) |arr_obj| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, arr_obj, &items);
+        for (items.items) |child_val| {
+            if (child_val.toObject()) |child_obj| {
+                const cn_atom = try vm.atom_table.intern("className");
+                if (child_obj.getProperty(cn_atom)) |cv| {
+                    if (cv.isString()) {
+                        const s = vm.atom_table.get(cv.toStringAtom());
+                        var it = std.mem.tokenizeScalar(u8, s, ' ');
+                        var matched = false;
+                        while (it.next()) |cls| {
+                            if (std.mem.eql(u8, cls, match_class)) {
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if (matched) {
+                            try out.append(vm.allocator, child_val);
+                        }
+                    }
+                }
+                try collectElementsByClassName(vm, child_obj, match_class, out);
+            }
+        }
+    }
+}
+
+fn nativeElementGetElementsByClassName(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isString()) {
+        const empty_arr = try createArray(vm, &[_]JSValue{});
+        return JSValue.fromObject(empty_arr);
+    }
+    const match_class = vm.atom_table.get(args[0].toStringAtom());
+    var out: std.ArrayList(JSValue) = .empty;
+    defer out.deinit(vm.allocator);
+    try collectElementsByClassName(vm, inst, match_class, &out);
+    const arr = try createArray(vm, out.items);
+    return JSValue.fromObject(arr);
+}
+
+fn nativeDocumentGetElementsByTagName(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const doc_obj = this_val.toObject() orelse return JSValue.undefined_val;
+    const body_atom = try vm.atom_table.intern("body");
+    const body_val = doc_obj.getProperty(body_atom) orelse return JSValue.undefined_val;
+    return nativeElementGetElementsByTagName(ctx, body_val, args);
+}
+
+fn nativeDocumentGetElementsByClassName(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const doc_obj = this_val.toObject() orelse return JSValue.undefined_val;
+    const body_atom = try vm.atom_table.intern("body");
+    const body_val = doc_obj.getProperty(body_atom) orelse return JSValue.undefined_val;
+    return nativeElementGetElementsByClassName(ctx, body_val, args);
 }
 
 fn nativeCanvasGetContext(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -3397,4 +3674,79 @@ test "universal web standards: navigator location history event target canvas wa
     const res5 = try vm.execute(&code5);
     try std.testing.expect(res5.isString());
     try std.testing.expectEqualStrings("ok", atom_table.get(res5.toStringAtom()));
+}
+
+test "universal web standards: blob createObjectURL document readyState and element traversal" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. Blob and URL.createObjectURL
+    const script_blob =
+        \\let b = new Blob(['hello ', 'world'], { type: 'text/plain' });
+        \\let url = URL.createObjectURL(b);
+        \\return b.size;
+    ;
+    var p1 = Parser.init(allocator, script_blob);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_blob");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isInt32());
+    try std.testing.expectEqual(@as(i32, 11), res1.toInt32());
+
+    // 2. document.readyState
+    const script_doc =
+        \\return document.readyState;
+    ;
+    var p2 = Parser.init(allocator, script_doc);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_doc");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isString());
+    try std.testing.expectEqualStrings("complete", atom_table.get(res2.toStringAtom()));
+
+    // 3. element.contains, element.cloneNode, element.remove
+    const script_elem =
+        \\let parent = document.createElement('div');
+        \\let child = document.createElement('span');
+        \\child.setAttribute('id', 'test-child');
+        \\parent.appendChild(child);
+        \\let hasChild = parent.contains(child);
+        \\let clone = parent.cloneNode(true);
+        \\child.remove();
+        \\let afterRemove = parent.contains(child);
+        \\return hasChild && !afterRemove;
+    ;
+    var p3 = Parser.init(allocator, script_elem);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_elem");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
 }
