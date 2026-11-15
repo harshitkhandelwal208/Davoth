@@ -83,19 +83,15 @@ pub fn initBuiltins(vm: *VM) !void {
     const clear_interval_fn = try vm.gc.allocateFunction(null, nativeClearTimeout, null);
     try global.setProperty(alloc, try table.intern("clearInterval"), JSValue.fromObject(clear_interval_fn));
 
-    // Web Storage: localStorage & sessionStorage
-    const storage_obj = try vm.gc.allocateObject(null);
-    const set_item_fn = try vm.gc.allocateFunction(null, nativeStorageSetItem, @ptrCast(vm));
-    try storage_obj.setProperty(alloc, try table.intern("setItem"), JSValue.fromObject(set_item_fn));
+    // Web Storage: Storage, localStorage & sessionStorage
+    const storage_ctor = try vm.gc.allocateFunction(null, nativeStorageConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("Storage"), JSValue.fromObject(storage_ctor));
 
-    const get_item_fn = try vm.gc.allocateFunction(null, nativeStorageGetItem, @ptrCast(vm));
-    try storage_obj.setProperty(alloc, try table.intern("getItem"), JSValue.fromObject(get_item_fn));
+    const local_storage_obj = try createStorage(vm);
+    try global.setProperty(alloc, try table.intern("localStorage"), JSValue.fromObject(local_storage_obj));
 
-    const remove_item_fn = try vm.gc.allocateFunction(null, nativeStorageRemoveItem, @ptrCast(vm));
-    try storage_obj.setProperty(alloc, try table.intern("removeItem"), JSValue.fromObject(remove_item_fn));
-
-    try global.setProperty(alloc, try table.intern("localStorage"), JSValue.fromObject(storage_obj));
-    try global.setProperty(alloc, try table.intern("sessionStorage"), JSValue.fromObject(storage_obj));
+    const session_storage_obj = try createStorage(vm);
+    try global.setProperty(alloc, try table.intern("sessionStorage"), JSValue.fromObject(session_storage_obj));
 
     // Fetch API
     const fetch_fn = try vm.gc.allocateFunction(null, nativeFetch, @ptrCast(vm));
@@ -335,6 +331,13 @@ pub fn initBuiltins(vm: *VM) !void {
     try global.setProperty(alloc, try table.intern("PopStateEvent"), JSValue.fromObject(popstate_ctor));
     const hashchange_ctor = try vm.gc.allocateFunction(null, nativeHashChangeEventConstructor, @ptrCast(vm));
     try global.setProperty(alloc, try table.intern("HashChangeEvent"), JSValue.fromObject(hashchange_ctor));
+    const pointer_ev_ctor = try vm.gc.allocateFunction(null, nativePointerEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("PointerEvent"), JSValue.fromObject(pointer_ev_ctor));
+    const input_ev_ctor = try vm.gc.allocateFunction(null, nativeInputEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("InputEvent"), JSValue.fromObject(input_ev_ctor));
+    const submit_ev_ctor = try vm.gc.allocateFunction(null, nativeSubmitEventConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("SubmitEvent"), JSValue.fromObject(submit_ev_ctor));
+    try global.setProperty(alloc, try table.intern("UIEvent"), JSValue.fromObject(ev_ctor));
 
     // Headers, Request, Response constructors
     const headers_ctor = try vm.gc.allocateFunction(null, nativeHeadersConstructor, @ptrCast(vm));
@@ -514,6 +517,39 @@ fn nativeClearTimeout(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JS
     return JSValue.undefined_val;
 }
 
+pub fn createStorage(vm: *VM) anyerror!*JSObject {
+    const alloc = vm.allocator;
+    const table = vm.atom_table;
+    const obj = try vm.gc.allocateObject(null);
+
+    const keys_arr = try createArray(vm, &[_]JSValue{});
+    try obj.setProperty(alloc, try table.intern("_keys"), JSValue.fromObject(keys_arr));
+    try obj.setProperty(alloc, try table.intern("length"), JSValue.fromInt32(0));
+
+    const set_fn = try vm.gc.allocateFunction(null, nativeStorageSetItem, @ptrCast(vm));
+    try obj.setProperty(alloc, try table.intern("setItem"), JSValue.fromObject(set_fn));
+
+    const get_fn = try vm.gc.allocateFunction(null, nativeStorageGetItem, @ptrCast(vm));
+    try obj.setProperty(alloc, try table.intern("getItem"), JSValue.fromObject(get_fn));
+
+    const rem_fn = try vm.gc.allocateFunction(null, nativeStorageRemoveItem, @ptrCast(vm));
+    try obj.setProperty(alloc, try table.intern("removeItem"), JSValue.fromObject(rem_fn));
+
+    const clear_fn = try vm.gc.allocateFunction(null, nativeStorageClear, @ptrCast(vm));
+    try obj.setProperty(alloc, try table.intern("clear"), JSValue.fromObject(clear_fn));
+
+    const key_fn = try vm.gc.allocateFunction(null, nativeStorageKey, @ptrCast(vm));
+    try obj.setProperty(alloc, try table.intern("key"), JSValue.fromObject(key_fn));
+
+    return obj;
+}
+
+fn nativeStorageConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const s = try createStorage(vm);
+    return JSValue.fromObject(s);
+}
+
 fn nativeStorageSetItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     if (args.len < 2) return JSValue.undefined_val;
@@ -526,7 +562,41 @@ fn nativeStorageSetItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValu
         else => "key",
     };
     const key_atom = try vm.atom_table.intern(key_str);
-    try target.setProperty(vm.allocator, key_atom, args[1]);
+
+    var val_buf: [256]u8 = undefined;
+    const val_str = switch (args[1].getType()) {
+        .String => vm.atom_table.get(args[1].toStringAtom()),
+        .Int32 => std.fmt.bufPrint(&val_buf, "{d}", .{args[1].toInt32()}) catch "0",
+        .Float64 => std.fmt.bufPrint(&val_buf, "{d}", .{args[1].toFloat64()}) catch "0",
+        .Boolean => if (args[1].toBoolean()) "true" else "false",
+        .Null => "null",
+        .Undefined => "undefined",
+        else => "[object Object]",
+    };
+    const val_atom = try vm.atom_table.intern(val_str);
+    try target.setProperty(vm.allocator, key_atom, JSValue.fromStringAtom(val_atom));
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    if (target.getProperty(keys_atom)) |kv| {
+        if (kv.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            var exists = false;
+            for (list.items) |it| {
+                if (it.isString() and std.mem.eql(u8, vm.atom_table.get(it.toStringAtom()), key_str)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                try list.append(vm.allocator, JSValue.fromStringAtom(key_atom));
+                const new_arr = try createArray(vm, list.items);
+                try target.setProperty(vm.allocator, keys_atom, JSValue.fromObject(new_arr));
+                try target.setProperty(vm.allocator, try vm.atom_table.intern("length"), JSValue.fromInt32(@intCast(list.items.len)));
+            }
+        }
+    }
     return JSValue.undefined_val;
 }
 
@@ -542,7 +612,9 @@ fn nativeStorageGetItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValu
         else => "key",
     };
     const key_atom = vm.atom_table.map.get(key_str) orelse return JSValue.null_val;
-    return target.getProperty(key_atom) orelse JSValue.null_val;
+    const v = target.getProperty(key_atom) orelse return JSValue.null_val;
+    if (v.isNull()) return JSValue.null_val;
+    return v;
 }
 
 fn nativeStorageRemoveItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -550,13 +622,81 @@ fn nativeStorageRemoveItem(ctx: *anyopaque, this_val: JSValue, args: []const JSV
     if (args.len == 0) return JSValue.undefined_val;
     const target = this_val.toObject() orelse return JSValue.undefined_val;
 
+    var key_buf: [128]u8 = undefined;
     const key_str = switch (args[0].getType()) {
         .String => vm.atom_table.get(args[0].toStringAtom()),
-        else => return JSValue.undefined_val,
+        .Int32 => std.fmt.bufPrint(&key_buf, "{d}", .{args[0].toInt32()}) catch "0",
+        else => "key",
     };
     const key_atom = vm.atom_table.map.get(key_str) orelse return JSValue.undefined_val;
     try target.setProperty(vm.allocator, key_atom, JSValue.null_val);
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    if (target.getProperty(keys_atom)) |kv| {
+        if (kv.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            var rem_idx: ?usize = null;
+            for (list.items, 0..) |it, idx| {
+                if (it.isString() and std.mem.eql(u8, vm.atom_table.get(it.toStringAtom()), key_str)) {
+                    rem_idx = idx;
+                    break;
+                }
+            }
+            if (rem_idx) |idx| {
+                _ = list.orderedRemove(idx);
+                const new_arr = try createArray(vm, list.items);
+                try target.setProperty(vm.allocator, keys_atom, JSValue.fromObject(new_arr));
+                try target.setProperty(vm.allocator, try vm.atom_table.intern("length"), JSValue.fromInt32(@intCast(list.items.len)));
+            }
+        }
+    }
     return JSValue.undefined_val;
+}
+
+fn nativeStorageClear(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const target = this_val.toObject() orelse return JSValue.undefined_val;
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    if (target.getProperty(keys_atom)) |kv| {
+        if (kv.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            for (list.items) |it| {
+                if (it.isString()) {
+                    try target.setProperty(vm.allocator, it.toStringAtom(), JSValue.null_val);
+                }
+            }
+            const empty_arr = try createArray(vm, &[_]JSValue{});
+            try target.setProperty(vm.allocator, keys_atom, JSValue.fromObject(empty_arr));
+            try target.setProperty(vm.allocator, try vm.atom_table.intern("length"), JSValue.fromInt32(0));
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeStorageKey(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0 or !args[0].isNumber()) return JSValue.null_val;
+    const idx = args[0].toInt32();
+    if (idx < 0) return JSValue.null_val;
+    const target = this_val.toObject() orelse return JSValue.null_val;
+
+    const keys_atom = try vm.atom_table.intern("_keys");
+    if (target.getProperty(keys_atom)) |kv| {
+        if (kv.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            if (@as(usize, @intCast(idx)) < list.items.len) {
+                return list.items[@as(usize, @intCast(idx))];
+            }
+        }
+    }
+    return JSValue.null_val;
 }
 
 fn nativeFetch(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -1777,13 +1917,82 @@ fn nativeAbortSignalStaticTimeout(ctx: *anyopaque, _: JSValue, args: []const JSV
     return nativeAbortSignalConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
 }
 
+fn collectFormControls(vm: *VM, elem: *JSObject, keys: *std.ArrayList(JSValue), vals: *std.ArrayList(JSValue)) anyerror!void {
+    const tag_val = elem.getProperty(try vm.atom_table.intern("tagName")) orelse JSValue.null_val;
+    if (tag_val.isString()) {
+        const tag = vm.atom_table.get(tag_val.toStringAtom());
+        if (std.ascii.eqlIgnoreCase(tag, "input") or
+            std.ascii.eqlIgnoreCase(tag, "textarea") or
+            std.ascii.eqlIgnoreCase(tag, "select") or
+            std.ascii.eqlIgnoreCase(tag, "button"))
+        {
+            var is_disabled = false;
+            if (elem.getProperty(try vm.atom_table.intern("disabled"))) |dv| {
+                is_disabled = dv.toBoolean();
+            }
+            if (!is_disabled) {
+                var name_str: ?[]const u8 = null;
+                if (elem.getProperty(try vm.atom_table.intern("name"))) |nv| {
+                    if (nv.isString()) {
+                        const s = vm.atom_table.get(nv.toStringAtom());
+                        if (s.len > 0) name_str = s;
+                    }
+                }
+                if (name_str == null) {
+                    if (jsElementHasAttribute(vm, elem, "name")) {
+                        const nattr = try nativeElementGetAttribute(@ptrCast(vm), JSValue.fromObject(elem), &[_]JSValue{JSValue.fromStringAtom(try vm.atom_table.intern("name"))});
+                        if (nattr.isString()) {
+                            const s = vm.atom_table.get(nattr.toStringAtom());
+                            if (s.len > 0) name_str = s;
+                        }
+                    }
+                }
+
+                if (name_str) |n| {
+                    var val_val = elem.getProperty(try vm.atom_table.intern("value")) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
+                    if (jsElementHasAttribute(vm, elem, "value") and val_val.isString() and vm.atom_table.get(val_val.toStringAtom()).len == 0) {
+                        val_val = try nativeElementGetAttribute(@ptrCast(vm), JSValue.fromObject(elem), &[_]JSValue{JSValue.fromStringAtom(try vm.atom_table.intern("value"))});
+                    }
+                    const name_atom = try vm.atom_table.intern(n);
+                    try keys.append(vm.allocator, JSValue.fromStringAtom(name_atom));
+                    try vals.append(vm.allocator, val_val);
+                }
+            }
+        }
+    }
+
+    const children_atom = try vm.atom_table.intern("_children");
+    if (elem.getProperty(children_atom)) |ch_val| {
+        if (ch_val.toObject()) |arr_obj| {
+            var items: std.ArrayList(JSValue) = .empty;
+            defer items.deinit(vm.allocator);
+            try getArrayElements(vm, arr_obj, &items);
+            for (items.items) |child_val| {
+                if (child_val.toObject()) |child_obj| {
+                    try collectFormControls(vm, child_obj, keys, vals);
+                }
+            }
+        }
+    }
+}
+
 // FormData Web API
-fn nativeFormDataConstructor(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+fn nativeFormDataConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     const inst = try vm.gc.allocateObject(null);
 
-    const keys_arr = try createArray(vm, &[_]JSValue{});
-    const vals_arr = try createArray(vm, &[_]JSValue{});
+    var keys_list: std.ArrayList(JSValue) = .empty;
+    defer keys_list.deinit(vm.allocator);
+    var vals_list: std.ArrayList(JSValue) = .empty;
+    defer vals_list.deinit(vm.allocator);
+
+    if (args.len > 0 and args[0].isObject()) {
+        const root = args[0].toObject().?;
+        try collectFormControls(vm, root, &keys_list, &vals_list);
+    }
+
+    const keys_arr = try createArray(vm, keys_list.items);
+    const vals_arr = try createArray(vm, vals_list.items);
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("_keys"), JSValue.fromObject(keys_arr));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("_values"), JSValue.fromObject(vals_arr));
 
@@ -1968,6 +2177,33 @@ fn nativeStyleRemoveProperty(ctx: *anyopaque, this_val: JSValue, args: []const J
 fn nativeStyleGetPropertyPriority(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeFormSubmit(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (!this_val.isObject()) return JSValue.undefined_val;
+
+    const ev_opts = try vm.gc.allocateObject(null);
+    try ev_opts.setProperty(vm.allocator, try vm.atom_table.intern("bubbles"), JSValue.true_val);
+    try ev_opts.setProperty(vm.allocator, try vm.atom_table.intern("cancelable"), JSValue.true_val);
+
+    const submit_ev = try nativeSubmitEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(try vm.atom_table.intern("submit")),
+        JSValue.fromObject(ev_opts),
+    });
+    _ = try nativeEventTargetDispatchEvent(ctx, this_val, &[_]JSValue{submit_ev});
+    return JSValue.undefined_val;
+}
+
+fn nativeFormReset(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (!this_val.isObject()) return JSValue.undefined_val;
+
+    const reset_ev = try nativeEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{
+        JSValue.fromStringAtom(try vm.atom_table.intern("reset")),
+    });
+    _ = try nativeEventTargetDispatchEvent(ctx, this_val, &[_]JSValue{reset_ev});
+    return JSValue.undefined_val;
 }
 
 // DOM Element and Document Web APIs
@@ -2155,8 +2391,24 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
 
     // Form element default properties
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("value"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("name"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("checked"), JSValue.false_val);
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("disabled"), JSValue.false_val);
+
+    if (std.ascii.eqlIgnoreCase(tag, "input")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("type"), JSValue.fromStringAtom(try vm.atom_table.intern("text")));
+    } else if (std.ascii.eqlIgnoreCase(tag, "button")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("type"), JSValue.fromStringAtom(try vm.atom_table.intern("submit")));
+    } else if (std.ascii.eqlIgnoreCase(tag, "form")) {
+        const form_submit_fn = try vm.gc.allocateFunction(null, nativeFormSubmit, @ptrCast(vm));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("submit"), JSValue.fromObject(form_submit_fn));
+        const form_reset_fn = try vm.gc.allocateFunction(null, nativeFormReset, @ptrCast(vm));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("reset"), JSValue.fromObject(form_reset_fn));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("method"), JSValue.fromStringAtom(try vm.atom_table.intern("get")));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("action"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("target"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("enctype"), JSValue.fromStringAtom(try vm.atom_table.intern("application/x-www-form-urlencoded")));
+    }
 
     if (std.ascii.eqlIgnoreCase(tag, "canvas")) {
         const get_ctx_fn = try vm.gc.allocateFunction(null, nativeCanvasGetContext, @ptrCast(vm));
@@ -4214,6 +4466,30 @@ fn nativeDocumentCreateComment(ctx: *anyopaque, this_val: JSValue, args: []const
     return JSValue.fromObject(inst);
 }
 
+fn nativeDocumentContains(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const doc_obj = this_val.toObject() orelse return JSValue.false_val;
+    if (args.len == 0 or !args[0].isObject()) return JSValue.false_val;
+    const target = args[0].toObject().?;
+    if (doc_obj == target) return JSValue.true_val;
+
+    if (doc_obj.getProperty(try vm.atom_table.intern("documentElement"))) |html_val| {
+        if (html_val.toObject()) |html_obj| {
+            if (html_obj == target) return JSValue.true_val;
+            const res = try nativeElementContains(ctx, html_val, args);
+            if (res.toBoolean()) return JSValue.true_val;
+        }
+    }
+    if (doc_obj.getProperty(try vm.atom_table.intern("body"))) |body_val| {
+        if (body_val.toObject()) |body_obj| {
+            if (body_obj == target) return JSValue.true_val;
+            const res = try nativeElementContains(ctx, body_val, args);
+            if (res.toBoolean()) return JSValue.true_val;
+        }
+    }
+    return JSValue.false_val;
+}
+
 pub fn createJsDocument(vm: *VM) anyerror!*JSObject {
     const alloc = vm.allocator;
     const table = vm.atom_table;
@@ -4288,6 +4564,9 @@ pub fn createJsDocument(vm: *VM) anyerror!*JSObject {
 
     const doc_create_comment_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateComment, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("createComment"), JSValue.fromObject(doc_create_comment_fn));
+
+    const doc_contains_fn = try vm.gc.allocateFunction(null, nativeDocumentContains, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("contains"), JSValue.fromObject(doc_contains_fn));
 
     // HTMLCollections and script reference
     const empty_forms = try createArray(vm, &[_]JSValue{});
@@ -4630,6 +4909,89 @@ fn nativeFocusEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValu
     return ev;
 }
 
+fn nativePointerEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev_val = try nativeMouseEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev = ev_val.toObject().?;
+
+    var pointer_id: i32 = 0;
+    var pointer_type: []const u8 = "mouse";
+    var is_primary = true;
+    var pressure: f64 = 0.0;
+    var width: f64 = 1.0;
+    var height: f64 = 1.0;
+
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("pointerId"))) |pid| {
+            if (pid.isNumber()) pointer_id = pid.toInt32();
+        }
+        if (init.getProperty(try vm.atom_table.intern("pointerType"))) |pt| {
+            if (pt.isString()) pointer_type = vm.atom_table.get(pt.toStringAtom());
+        }
+        if (init.getProperty(try vm.atom_table.intern("isPrimary"))) |ip| {
+            is_primary = ip.toBoolean();
+        }
+        if (init.getProperty(try vm.atom_table.intern("pressure"))) |p| {
+            if (p.isNumber()) pressure = p.toFloat64();
+        }
+        if (init.getProperty(try vm.atom_table.intern("width"))) |w| {
+            if (w.isNumber()) width = w.toFloat64();
+        }
+        if (init.getProperty(try vm.atom_table.intern("height"))) |h| {
+            if (h.isNumber()) height = h.toFloat64();
+        }
+    }
+
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("pointerId"), JSValue.fromInt32(pointer_id));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("pointerType"), JSValue.fromStringAtom(try vm.atom_table.intern(pointer_type)));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("isPrimary"), JSValue.fromBoolean(is_primary));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("pressure"), JSValue.fromFloat64(pressure));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("width"), JSValue.fromFloat64(width));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("height"), JSValue.fromFloat64(height));
+    return ev_val;
+}
+
+fn nativeInputEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev_val = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev = ev_val.toObject().?;
+
+    var data_val = JSValue.null_val;
+    var input_type: []const u8 = "";
+    var is_composing = false;
+
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("data"))) |d| data_val = d;
+        if (init.getProperty(try vm.atom_table.intern("inputType"))) |it| {
+            if (it.isString()) input_type = vm.atom_table.get(it.toStringAtom());
+        }
+        if (init.getProperty(try vm.atom_table.intern("isComposing"))) |ic| {
+            is_composing = ic.toBoolean();
+        }
+    }
+
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("data"), data_val);
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("inputType"), JSValue.fromStringAtom(try vm.atom_table.intern(input_type)));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("isComposing"), JSValue.fromBoolean(is_composing));
+    return ev_val;
+}
+
+fn nativeSubmitEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev_val = try nativeEventConstructor(ctx, JSValue.undefined_val, args);
+    const ev = ev_val.toObject().?;
+
+    var submitter_val = JSValue.null_val;
+    if (args.len > 1 and args[1].isObject()) {
+        const init = args[1].toObject().?;
+        if (init.getProperty(try vm.atom_table.intern("submitter"))) |s| submitter_val = s;
+    }
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("submitter"), submitter_val);
+    return ev_val;
+}
+
 fn nativeSubtleDigest(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     var input_bytes: []const u8 = "";
@@ -4806,15 +5168,34 @@ fn nativeEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) an
     else
         JSValue.fromStringAtom(try vm.atom_table.intern("event"));
 
+    var bubbles = false;
+    var cancelable = false;
+    var composed = false;
+    if (args.len > 1 and args[1].isObject()) {
+        const init_dict = args[1].toObject().?;
+        if (init_dict.getProperty(try vm.atom_table.intern("bubbles"))) |b| {
+            bubbles = b.toBoolean();
+        }
+        if (init_dict.getProperty(try vm.atom_table.intern("cancelable"))) |canc| {
+            cancelable = canc.toBoolean();
+        }
+        if (init_dict.getProperty(try vm.atom_table.intern("composed"))) |comp| {
+            composed = comp.toBoolean();
+        }
+    }
+
     try ev.setProperty(vm.allocator, try vm.atom_table.intern("type"), type_str);
-    try ev.setProperty(vm.allocator, try vm.atom_table.intern("bubbles"), JSValue.false_val);
-    try ev.setProperty(vm.allocator, try vm.atom_table.intern("cancelable"), JSValue.false_val);
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("bubbles"), JSValue.fromBoolean(bubbles));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("cancelable"), JSValue.fromBoolean(cancelable));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("composed"), JSValue.fromBoolean(composed));
     try ev.setProperty(vm.allocator, try vm.atom_table.intern("defaultPrevented"), JSValue.false_val);
 
     const prev_fn = try vm.gc.allocateFunction(null, nativeEventPreventDefault, @ptrCast(vm));
     try ev.setProperty(vm.allocator, try vm.atom_table.intern("preventDefault"), JSValue.fromObject(prev_fn));
     const stop_fn = try vm.gc.allocateFunction(null, nativeEventStopPropagation, @ptrCast(vm));
     try ev.setProperty(vm.allocator, try vm.atom_table.intern("stopPropagation"), JSValue.fromObject(stop_fn));
+    const stop_imm_fn = try vm.gc.allocateFunction(null, nativeEventStopImmediatePropagation, @ptrCast(vm));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("stopImmediatePropagation"), JSValue.fromObject(stop_imm_fn));
 
     const init_ev_fn = try vm.gc.allocateFunction(null, nativeEventInitEvent, @ptrCast(vm));
     try ev.setProperty(vm.allocator, try vm.atom_table.intern("initEvent"), JSValue.fromObject(init_ev_fn));
@@ -5100,6 +5481,14 @@ fn nativeEventStopPropagation(ctx: *anyopaque, this_val: JSValue, _: []const JSV
     return JSValue.undefined_val;
 }
 
+fn nativeEventStopImmediatePropagation(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("propagationStopped"), JSValue.true_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("immediatePropagationStopped"), JSValue.true_val);
+    return JSValue.undefined_val;
+}
+
 fn nativeEventTargetAddEventListener(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     const inst = this_val.toObject() orelse return JSValue.undefined_val;
@@ -5167,18 +5556,9 @@ fn nativeEventTargetRemoveEventListener(ctx: *anyopaque, this_val: JSValue, args
     return JSValue.undefined_val;
 }
 
-fn nativeEventTargetDispatchEvent(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
-    const vm: *VM = @ptrCast(@alignCast(ctx));
-    const inst = this_val.toObject() orelse return JSValue.false_val;
-    if (args.len == 0 or !args[0].isObject()) return JSValue.false_val;
-
-    const ev_obj = args[0].toObject().?;
-    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("target"), this_val);
-    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("currentTarget"), this_val);
-
-    const type_val = ev_obj.getProperty(try vm.atom_table.intern("type")) orelse return JSValue.false_val;
-    if (!type_val.isString()) return JSValue.false_val;
-    const type_str = vm.atom_table.get(type_val.toStringAtom());
+fn dispatchEventToTarget(vm: *VM, target: JSValue, ev_obj: *JSObject, type_str: []const u8, ev_val: JSValue) !bool {
+    const inst = target.toObject() orelse return true;
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("currentTarget"), target);
 
     const listeners_atom = try vm.atom_table.intern("_listeners");
     if (inst.getProperty(listeners_atom)) |val| {
@@ -5188,16 +5568,71 @@ fn nativeEventTargetDispatchEvent(ctx: *anyopaque, this_val: JSValue, args: []co
             try getArrayElements(vm, arr, &list);
 
             for (list.items) |it| {
+                if (ev_obj.getProperty(try vm.atom_table.intern("immediatePropagationStopped"))) |ips| {
+                    if (ips.toBoolean()) break;
+                }
                 if (it.toObject()) |obj| {
                     if (obj.getProperty(try vm.atom_table.intern("type"))) |t_val| {
                         if (t_val.isString() and std.mem.eql(u8, vm.atom_table.get(t_val.toStringAtom()), type_str)) {
                             if (obj.getProperty(try vm.atom_table.intern("callback"))) |cb_val| {
-                                _ = vm.call(cb_val, this_val, &[_]JSValue{args[0]}) catch {};
+                                _ = vm.call(cb_val, target, &[_]JSValue{ev_val}) catch {};
                             }
                         }
                     }
                 }
             }
+        }
+    }
+
+    if (ev_obj.getProperty(try vm.atom_table.intern("propagationStopped"))) |ps| {
+        if (ps.toBoolean()) return false;
+    }
+    if (ev_obj.getProperty(try vm.atom_table.intern("immediatePropagationStopped"))) |ips| {
+        if (ips.toBoolean()) return false;
+    }
+    return true;
+}
+
+fn nativeEventTargetDispatchEvent(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (!this_val.isObject()) return JSValue.false_val;
+    if (args.len == 0 or !args[0].isObject()) return JSValue.false_val;
+
+    const ev_obj = args[0].toObject().?;
+    try ev_obj.setProperty(vm.allocator, try vm.atom_table.intern("target"), this_val);
+
+    const type_val = ev_obj.getProperty(try vm.atom_table.intern("type")) orelse return JSValue.false_val;
+    if (!type_val.isString()) return JSValue.false_val;
+    const type_str = vm.atom_table.get(type_val.toStringAtom());
+
+    const bubbles_prop = ev_obj.getProperty(try vm.atom_table.intern("bubbles")) orelse JSValue.false_val;
+    const bubbles = bubbles_prop.toBoolean();
+
+    var cur = this_val;
+    while (true) {
+        const can_continue = try dispatchEventToTarget(vm, cur, ev_obj, type_str, args[0]);
+        if (!can_continue or !bubbles) break;
+
+        var next: ?JSValue = null;
+        if (cur.toObject()) |cur_obj| {
+            if (cur_obj.getProperty(try vm.atom_table.intern("parentNode"))) |p| {
+                if (p.isObject() and !p.isNull()) {
+                    next = p;
+                }
+            }
+            if (next == null) {
+                if (cur_obj.getProperty(try vm.atom_table.intern("defaultView"))) |w| {
+                    if (w.isObject() and !w.isNull() and w != cur) {
+                        next = w;
+                    }
+                }
+            }
+        }
+
+        if (next) |n| {
+            cur = n;
+        } else {
+            break;
         }
     }
 
@@ -6876,6 +7311,159 @@ test "universal web standards: Canvas 2D expansion, DOMTokenList full parity, El
     defer ast4.deinit(allocator);
 
     var c4 = BytecodeCompiler.init(allocator, atom_table, "test_structural_pseudos");
+    var code4 = try c4.compile(ast4);
+    defer code4.deinit();
+
+    const res4 = try vm.execute(&code4);
+    try std.testing.expect(res4.isBoolean());
+    try std.testing.expect(res4.toBoolean());
+}
+
+test "universal web standards: Web Storage parity, FormData from forms, event bubbling, and modern event constructors" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. Web Storage: Storage, localStorage & sessionStorage independence, clear, key, length
+    const script_storage =
+        \\localStorage.clear();
+        \\sessionStorage.clear();
+        \\localStorage.setItem("theme", "dark");
+        \\localStorage.setItem("user", "alice");
+        \\let len1 = localStorage.length;
+        \\let k0 = localStorage.key(0);
+        \\let k1 = localStorage.key(1);
+        \\let valTheme = localStorage.getItem("theme");
+        \\let sessEmpty = (sessionStorage.getItem("theme") === null) && (sessionStorage.length === 0);
+        \\localStorage.removeItem("theme");
+        \\let len2 = localStorage.length;
+        \\let themeRemoved = (localStorage.getItem("theme") === null);
+        \\localStorage.clear();
+        \\let len3 = localStorage.length;
+        \\return (len1 === 2) && (valTheme === "dark") && sessEmpty && (len2 === 1) && themeRemoved && (len3 === 0);
+    ;
+    var p1 = Parser.init(allocator, script_storage);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_storage_standards");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. FormData from form element and form submit/reset
+    const script_form =
+        \\let form = document.createElement("form");
+        \\let inpUser = document.createElement("input");
+        \\inpUser.setAttribute("name", "login_name");
+        \\inpUser.value = "antigravity";
+        \\let inpBio = document.createElement("textarea");
+        \\inpBio.setAttribute("name", "user_bio");
+        \\inpBio.value = "Davoth Web Browser Engine";
+        \\form.appendChild(inpUser);
+        \\form.appendChild(inpBio);
+        \\let fd = new FormData(form);
+        \\let gotName = fd.get("login_name");
+        \\let gotBio = fd.get("user_bio");
+        \\let hasUser = fd.has("login_name");
+        \\window.formSubmitted = false;
+        \\window.evType = "";
+        \\window.evBubbles = false;
+        \\window.evCancel = false;
+        \\function onFormSubmit(ev) {
+        \\    window.formSubmitted = true;
+        \\    window.evType = ev.type;
+        \\    window.evBubbles = ev.bubbles;
+        \\    window.evCancel = ev.cancelable;
+        \\}
+        \\form.addEventListener("submit", onFormSubmit);
+        \\form.submit();
+        \\return (gotName === "antigravity") && (gotBio === "Davoth Web Browser Engine") && hasUser && window.formSubmitted && (window.evType === "submit") && window.evBubbles && window.evCancel;
+    ;
+    var p2 = Parser.init(allocator, script_form);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_form_data_submit");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isBoolean());
+    try std.testing.expect(res2.toBoolean());
+
+    // 3. Event Bubbling & stopPropagation
+    const script_bubbling =
+        \\window.grandParent = document.createElement("div");
+        \\window.parentEl = document.createElement("section");
+        \\window.btn = document.createElement("button");
+        \\grandParent.appendChild(parentEl);
+        \\parentEl.appendChild(btn);
+        \\window.btnClicked = false;
+        \\window.parentSeen = false;
+        \\window.grandParentSeen = false;
+        \\function onBtnClick(e) {
+        \\    window.btnClicked = (e.target === window.btn);
+        \\}
+        \\function onParentClick(e) {
+        \\    window.parentSeen = (e.currentTarget === window.parentEl);
+        \\    e.stopPropagation();
+        \\}
+        \\function onGrandParentClick(e) {
+        \\    window.grandParentSeen = true;
+        \\}
+        \\btn.addEventListener("click", onBtnClick);
+        \\parentEl.addEventListener("click", onParentClick);
+        \\grandParent.addEventListener("click", onGrandParentClick);
+        \\let clickEv = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 150, clientY: 250 });
+        \\btn.dispatchEvent(clickEv);
+        \\return window.btnClicked && window.parentSeen && (!window.grandParentSeen) && (clickEv.clientX === 150);
+    ;
+    var p3 = Parser.init(allocator, script_bubbling);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_event_bubbling");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
+
+    // 4. PointerEvent, InputEvent, SubmitEvent constructors and document.contains
+    const script_events_doc =
+        \\let pe = new PointerEvent("pointerdown", { pointerId: 4, pointerType: "touch", isPrimary: true, pressure: 0.8 });
+        \\let isPe = (pe.type === "pointerdown") && (pe.pointerId === 4) && (pe.pointerType === "touch") && pe.isPrimary;
+        \\let ie = new InputEvent("input", { inputType: "insertText", data: "hello" });
+        \\let isIe = (ie.type === "input") && (ie.inputType === "insertText") && (ie.data === "hello");
+        \\let se = new SubmitEvent("submit");
+        \\let isSe = (se.type === "submit") && (se.submitter === null);
+        \\let childNode = document.createElement("span");
+        \\let notContainedBefore = (!document.contains(childNode));
+        \\document.body.appendChild(childNode);
+        \\let containedAfter = document.contains(childNode);
+        \\return isPe && isIe && isSe && notContainedBefore && containedAfter;
+    ;
+    var p4 = Parser.init(allocator, script_events_doc);
+    const ast4 = try p4.parseProgram();
+    defer ast4.deinit(allocator);
+
+    var c4 = BytecodeCompiler.init(allocator, atom_table, "test_events_doc_contains");
     var code4 = try c4.compile(ast4);
     defer code4.deinit();
 

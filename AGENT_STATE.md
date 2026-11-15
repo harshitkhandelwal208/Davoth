@@ -6,7 +6,7 @@
 - **Base Memory Footprint**: ~19.5 MB USS (~21.7 MB PSS, ~42.3 MB RSS)
 - **100-Tab Concurrent Footprint**: **13.76 MB USS** (Budget: < 35 MB) with **0 ms** CPU profile time
 - **50-Tab Hibernation Footprint**: **13.96 MB USS** (Budget: < 45 MB)
-- **Automated Unit Test Suite**: **128/128 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
+- **Automated Unit Test Suite**: **129/129 tests passed (100%)**, **0 leaks** verified under `std.testing.allocator`
 - **CLI Verification Suites**:
   - Web Platform Tests (WPT): **17/17 passed (100%)** (including offline real-world layout fixtures)
   - Acid3 DOM Core & Events: **4/4 passed (100%)**
@@ -149,11 +149,15 @@
   - Implemented WHATWG Tree Navigation & Element Traversal: `firstChild`, `lastChild`, `childNodes`, `children`, `firstElementChild`, `lastElementChild`, `nextSibling`, `previousSibling`, `nextElementSibling`, `previousElementSibling`, `parentElement`, `childElementCount`, and automatic `textContent` aggregation from child nodes upon tree mutations.
   - Implemented Document collections: `document.forms`, `document.links`, `document.images`, `document.scripts`, `document.currentScript`.
   - Implemented History traversal & navigation events: `history.go(delta)`, `history.back()`, `history.forward()`, `PopStateEvent`, `HashChangeEvent`.
+  - Implemented Web Storage API full parity: `Storage` prototype and constructor, `window.localStorage` and `window.sessionStorage`, `getItem`, `setItem`, `removeItem`, `clear()`, `key(index)`, and `length`.
+  - Implemented WHATWG Form handling & controls: `FormData` extraction from `<form>` (`new FormData(formElement)` traversing `<input>`, `<textarea>`, `<select>`, `<button>`), HTMLFormElement attributes (`action`, `method`, `target`, `enctype`) and methods (`submit()`, `reset()`), form control attributes (`name`, `type`, `value`, `disabled`).
+  - Implemented DOM Event Bubbling & Dispatch: 2-phase bubbling up `parentNode` chain and `window`, `stopImmediatePropagation()`, `stopPropagation()`, options parsing (`bubbles`, `cancelable`, `composed`) in `Event` constructor, and modern event constructors (`PointerEvent`, `InputEvent`, `SubmitEvent`).
+  - Implemented Node tree containment: `document.contains(node)` and Element `.contains(node)`.
 - **100-Tab Concurrency Profile (`--bench-100tabs`)**:
   - **Tabs Allocated**: 100 concurrent tabs with full DOM trees and tile caches in **0 ms**.
-  - **Pre-hibernation**: RSS: 31,084 KB | PSS: 15,119 KB | USS: 14,024 KB.
+  - **Pre-hibernation**: RSS: 30,852 KB | PSS: 15,869 KB | USS: 14,856 KB.
   - **Hibernation Time**: 99 background tabs hibernated in **0 ms**.
-  - **Post-hibernation**: RSS: 31,148 KB | PSS: 15,183 KB | USS: 14,088 KB (**13.76 MB USS**, beating the <35 MB budget).
+  - **Post-hibernation**: RSS: 30,916 KB | PSS: 15,933 KB | USS: 14,920 KB (**14.57 MB USS**, beating the <35 MB budget).
   - **Total Profile Execution Time**: **0 ms**.
 - **Zero Memory Leaks Audit**:
-  - **128/128** unit tests passing with **0 leaks** under `std.testing.allocator`.
+  - **129/129** unit tests passing with **0 leaks** under `std.testing.allocator`.
