@@ -42,6 +42,8 @@ pub const OpCode = enum(u8) {
     CreateArray = 33,
     LogicalAnd = 34,
     LogicalOr = 35,
+    GetElem = 36,
+    SetElem = 37,
 };
 
 pub const CodeBlock = struct {
@@ -246,11 +248,25 @@ pub const BytecodeCompiler = struct {
                     }
                 } else if (a.target.data == .Member) {
                     const m = a.target.data.Member;
-                    try self.compileNode(m.object);
-                    try self.compileNode(a.value);
-                    const atom = try self.atom_table.intern(m.property);
-                    try self.code.emitOp(.SetProp);
-                    try self.code.emitU16(@truncate(atom.toU32()));
+                    if (m.computed) {
+                        try self.compileNode(m.object);
+                        if (m.property_expr) |pe| {
+                            try self.compileNode(pe);
+                        } else {
+                            const atom = try self.atom_table.intern(m.property);
+                            const const_idx = try self.code.addConstant(JSValue.fromStringAtom(atom));
+                            try self.code.emitOp(.LoadConst);
+                            try self.code.emitU16(@truncate(const_idx));
+                        }
+                        try self.compileNode(a.value);
+                        try self.code.emitOp(.SetElem);
+                    } else {
+                        try self.compileNode(m.object);
+                        try self.compileNode(a.value);
+                        const atom = try self.atom_table.intern(m.property);
+                        try self.code.emitOp(.SetProp);
+                        try self.code.emitU16(@truncate(atom.toU32()));
+                    }
                 }
             },
             .Call => |c| {
@@ -262,10 +278,23 @@ pub const BytecodeCompiler = struct {
                 try self.code.instructions.append(self.allocator, @truncate(c.arguments.len));
             },
             .Member => |m| {
-                try self.compileNode(m.object);
-                const atom = try self.atom_table.intern(m.property);
-                try self.code.emitOp(.GetProp);
-                try self.code.emitU16(@truncate(atom.toU32()));
+                if (m.computed) {
+                    try self.compileNode(m.object);
+                    if (m.property_expr) |pe| {
+                        try self.compileNode(pe);
+                    } else {
+                        const atom = try self.atom_table.intern(m.property);
+                        const const_idx = try self.code.addConstant(JSValue.fromStringAtom(atom));
+                        try self.code.emitOp(.LoadConst);
+                        try self.code.emitU16(@truncate(const_idx));
+                    }
+                    try self.code.emitOp(.GetElem);
+                } else {
+                    try self.compileNode(m.object);
+                    const atom = try self.atom_table.intern(m.property);
+                    try self.code.emitOp(.GetProp);
+                    try self.code.emitU16(@truncate(atom.toU32()));
+                }
             },
             .ArrayLiteral => |arr| {
                 for (arr) |elem| {

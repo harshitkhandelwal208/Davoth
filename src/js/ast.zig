@@ -62,6 +62,7 @@ pub const Node = struct {
         Member: struct {
             object: *Node,
             property: []const u8,
+            property_expr: ?*Node = null,
             computed: bool,
         },
         ArrayLiteral: []*Node,
@@ -133,6 +134,7 @@ pub const Node = struct {
             },
             .Member => |m| {
                 m.object.deinit(allocator);
+                if (m.property_expr) |p| p.deinit(allocator);
             },
             .ArrayLiteral => |arr| {
                 for (arr) |item| item.deinit(allocator);

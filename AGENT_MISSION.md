@@ -60,7 +60,7 @@ Davoth does **NOT** embed or wrap Gecko, Blink, WebKit, or Servo. It does **NOT*
 2. **Autonomous Execution**:
    - Work through features systematically, implementing real, production-ready Zig code (avoid stubs or fake mocks).
    - Test each subsystem with dedicated unit and integration tests.
-3. **Commit Logical Milestones**:
-   - After completing each meaningful subsystem upgrade or fix, verify tests pass and create a clear git commit.
+3. **Commit & Push Logical Milestones**:
+   - After completing each meaningful subsystem upgrade or fix, verify tests pass, create a clear git commit, and push all commits to GitHub: `git push origin main`.
 4. **Update Progress in `AGENT_STATE.md`**:
    - Record what was done, what was verified, and the next priority task.

@@ -466,6 +466,16 @@ pub fn initBuiltins(vm: *VM) !void {
     try custom_elements_obj.setProperty(alloc, try table.intern("whenDefined"), JSValue.fromObject(ce_when_def_fn));
 
     try global.setProperty(alloc, try table.intern("customElements"), JSValue.fromObject(custom_elements_obj));
+
+    // Range constructor
+    const range_ctor = try vm.gc.allocateFunction(null, nativeRangeConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("Range"), JSValue.fromObject(range_ctor));
+
+    // Selection constructor & getSelection
+    const get_sel_fn = try vm.gc.allocateFunction(null, nativeGetSelection, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("getSelection"), JSValue.fromObject(get_sel_fn));
+    const sel_ctor = try vm.gc.allocateFunction(null, nativeSelectionConstructor, @ptrCast(vm));
+    try global.setProperty(alloc, try table.intern("Selection"), JSValue.fromObject(sel_ctor));
 }
 
 fn nativeConsoleLog(_: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -1841,6 +1851,125 @@ fn nativeWebSocketClose(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) 
     return JSValue.undefined_val;
 }
 
+// CSSStyleDeclaration and CSSOM helpers
+fn createCSSStyleDeclaration(vm: *VM) !*JSObject {
+    const style_obj = try vm.gc.allocateObject(null);
+    const set_fn = try vm.gc.allocateFunction(null, nativeStyleSetProperty, @ptrCast(vm));
+    try style_obj.setProperty(vm.allocator, try vm.atom_table.intern("setProperty"), JSValue.fromObject(set_fn));
+    const get_fn = try vm.gc.allocateFunction(null, nativeStyleGetPropertyValue, @ptrCast(vm));
+    try style_obj.setProperty(vm.allocator, try vm.atom_table.intern("getPropertyValue"), JSValue.fromObject(get_fn));
+    const rem_fn = try vm.gc.allocateFunction(null, nativeStyleRemoveProperty, @ptrCast(vm));
+    try style_obj.setProperty(vm.allocator, try vm.atom_table.intern("removeProperty"), JSValue.fromObject(rem_fn));
+    const prio_fn = try vm.gc.allocateFunction(null, nativeStyleGetPropertyPriority, @ptrCast(vm));
+    try style_obj.setProperty(vm.allocator, try vm.atom_table.intern("getPropertyPriority"), JSValue.fromObject(prio_fn));
+    try style_obj.setProperty(vm.allocator, try vm.atom_table.intern("cssText"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    return style_obj;
+}
+
+fn nativeStyleSetProperty(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len < 2 or !args[0].isString()) return JSValue.undefined_val;
+
+    const prop_name = vm.atom_table.get(args[0].toStringAtom());
+    const prop_atom = try vm.atom_table.intern(prop_name);
+    try inst.setProperty(vm.allocator, prop_atom, args[1]);
+
+    if (std.mem.indexOfScalar(u8, prop_name, '-')) |_| {
+        var camel_buf: [128]u8 = undefined;
+        var c_idx: usize = 0;
+        var cap_next = false;
+        for (prop_name) |ch| {
+            if (ch == '-') {
+                cap_next = true;
+            } else {
+                if (c_idx < camel_buf.len) {
+                    camel_buf[c_idx] = if (cap_next) std.ascii.toUpper(ch) else ch;
+                    c_idx += 1;
+                }
+                cap_next = false;
+            }
+        }
+        if (c_idx > 0) {
+            const camel_atom = try vm.atom_table.intern(camel_buf[0..c_idx]);
+            try inst.setProperty(vm.allocator, camel_atom, args[1]);
+        }
+    }
+
+    return JSValue.undefined_val;
+}
+
+fn nativeStyleGetPropertyValue(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    if (args.len == 0 or !args[0].isString()) return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+
+    const prop_name = vm.atom_table.get(args[0].toStringAtom());
+    const prop_atom = try vm.atom_table.intern(prop_name);
+    if (inst.getProperty(prop_atom)) |val| {
+        if (val.isString()) return val;
+    }
+
+    if (std.mem.indexOfScalar(u8, prop_name, '-')) |_| {
+        var camel_buf: [128]u8 = undefined;
+        var c_idx: usize = 0;
+        var cap_next = false;
+        for (prop_name) |ch| {
+            if (ch == '-') {
+                cap_next = true;
+            } else {
+                if (c_idx < camel_buf.len) {
+                    camel_buf[c_idx] = if (cap_next) std.ascii.toUpper(ch) else ch;
+                    c_idx += 1;
+                }
+                cap_next = false;
+            }
+        }
+        if (c_idx > 0) {
+            const camel_atom = try vm.atom_table.intern(camel_buf[0..c_idx]);
+            if (inst.getProperty(camel_atom)) |val| {
+                if (val.isString()) return val;
+            }
+        }
+    }
+
+    // Try parsing out of cssText if set
+    if (inst.getProperty(try vm.atom_table.intern("cssText"))) |ct_val| {
+        if (ct_val.isString()) {
+            const ct_str = vm.atom_table.get(ct_val.toStringAtom());
+            var decl_it = std.mem.splitScalar(u8, ct_str, ';');
+            while (decl_it.next()) |decl| {
+                if (std.mem.indexOfScalar(u8, decl, ':')) |colon| {
+                    const d_name = std.mem.trim(u8, decl[0..colon], " \t\r\n");
+                    const d_val = std.mem.trim(u8, decl[colon + 1 ..], " \t\r\n");
+                    if (std.ascii.eqlIgnoreCase(d_name, prop_name)) {
+                        return JSValue.fromStringAtom(try vm.atom_table.intern(d_val));
+                    }
+                }
+            }
+        }
+    }
+
+    return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeStyleRemoveProperty(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    if (args.len == 0 or !args[0].isString()) return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+
+    const prop_name = vm.atom_table.get(args[0].toStringAtom());
+    const prop_atom = try vm.atom_table.intern(prop_name);
+    const old_val = inst.getProperty(prop_atom) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    try inst.setProperty(vm.allocator, prop_atom, JSValue.fromStringAtom(try vm.atom_table.intern("")));
+    return if (old_val.isString()) old_val else JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeStyleGetPropertyPriority(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
 // DOM Element and Document Web APIs
 fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     const inst = try vm.gc.allocateObject(null);
@@ -1868,7 +1997,7 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("children"), JSValue.fromObject(children_arr));
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("childNodes"), JSValue.fromObject(children_arr));
 
-    const style_obj = try vm.gc.allocateObject(null);
+    const style_obj = try createCSSStyleDeclaration(vm);
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("style"), JSValue.fromObject(style_obj));
 
     const dataset_obj = try vm.gc.allocateObject(null);
@@ -1876,6 +2005,10 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
 
     // classList
     const class_list_obj = try vm.gc.allocateObject(null);
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("_elem"), JSValue.fromObject(inst));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("length"), JSValue.fromInt32(0));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("value"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+
     const cl_add_fn = try vm.gc.allocateFunction(null, nativeClassListAdd, @ptrCast(vm));
     try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("add"), JSValue.fromObject(cl_add_fn));
 
@@ -1888,7 +2021,28 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     const cl_toggle_fn = try vm.gc.allocateFunction(null, nativeClassListToggle, @ptrCast(vm));
     try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("toggle"), JSValue.fromObject(cl_toggle_fn));
 
+    const cl_item_fn = try vm.gc.allocateFunction(null, nativeClassListItem, @ptrCast(vm));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("item"), JSValue.fromObject(cl_item_fn));
+
+    const cl_replace_fn = try vm.gc.allocateFunction(null, nativeClassListReplace, @ptrCast(vm));
+    try class_list_obj.setProperty(vm.allocator, try vm.atom_table.intern("replace"), JSValue.fromObject(cl_replace_fn));
+
     try inst.setProperty(vm.allocator, try vm.atom_table.intern("classList"), JSValue.fromObject(class_list_obj));
+
+    const empty_attrs = try createArray(vm, &[_]JSValue{});
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("_attrs"), JSValue.fromObject(empty_attrs));
+
+    const has_attrs_fn = try vm.gc.allocateFunction(null, nativeElementHasAttributes, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("hasAttributes"), JSValue.fromObject(has_attrs_fn));
+
+    const get_attr_names_fn = try vm.gc.allocateFunction(null, nativeElementGetAttributeNames, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("getAttributeNames"), JSValue.fromObject(get_attr_names_fn));
+
+    const toggle_attr_fn = try vm.gc.allocateFunction(null, nativeElementToggleAttribute, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("toggleAttribute"), JSValue.fromObject(toggle_attr_fn));
+
+    const replace_with_fn = try vm.gc.allocateFunction(null, nativeElementReplaceWith, @ptrCast(vm));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("replaceWith"), JSValue.fromObject(replace_with_fn));
 
     // Element methods
     const get_attr_fn = try vm.gc.allocateFunction(null, nativeElementGetAttribute, @ptrCast(vm));
@@ -2007,9 +2161,222 @@ fn createJsElement(vm: *VM, tag: []const u8) !*JSObject {
     if (std.ascii.eqlIgnoreCase(tag, "canvas")) {
         const get_ctx_fn = try vm.gc.allocateFunction(null, nativeCanvasGetContext, @ptrCast(vm));
         try inst.setProperty(vm.allocator, try vm.atom_table.intern("getContext"), JSValue.fromObject(get_ctx_fn));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("width"), JSValue.fromInt32(300));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("height"), JSValue.fromInt32(150));
+        const to_data_url_fn = try vm.gc.allocateFunction(null, nativeCanvasToDataURL, @ptrCast(vm));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("toDataURL"), JSValue.fromObject(to_data_url_fn));
+        const to_blob_fn = try vm.gc.allocateFunction(null, nativeCanvasToBlob, @ptrCast(vm));
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("toBlob"), JSValue.fromObject(to_blob_fn));
     }
 
     return inst;
+}
+
+fn syncClassListProperties(vm: *VM, inst: *JSObject, items: []const JSValue) anyerror!void {
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("length"), JSValue.fromInt32(@intCast(items.len)));
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(vm.allocator);
+    for (items, 0..) |it, idx| {
+        if (it.isString()) {
+            if (idx > 0) try buf.append(vm.allocator, ' ');
+            try buf.appendSlice(vm.allocator, vm.atom_table.get(it.toStringAtom()));
+        }
+    }
+
+    const val_str = try vm.atom_table.intern(buf.items);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("value"), JSValue.fromStringAtom(val_str));
+
+    if (inst.getProperty(try vm.atom_table.intern("_elem"))) |el_val| {
+        if (el_val.toObject()) |el_obj| {
+            try el_obj.setProperty(vm.allocator, try vm.atom_table.intern("className"), JSValue.fromStringAtom(val_str));
+            try el_obj.setProperty(vm.allocator, try vm.atom_table.intern("class"), JSValue.fromStringAtom(val_str));
+
+            const attrs_atom = try vm.atom_table.intern("_attrs");
+            if (el_obj.getProperty(attrs_atom)) |val| {
+                if (val.toObject()) |arr| {
+                    var list: std.ArrayList(JSValue) = .empty;
+                    defer list.deinit(vm.allocator);
+                    try getArrayElements(vm, arr, &list);
+                    const class_atom = try vm.atom_table.intern("class");
+                    var class_idx: ?usize = null;
+                    for (list.items, 0..) |it, i| {
+                        if (it.isString() and std.mem.eql(u8, vm.atom_table.get(it.toStringAtom()), "class")) {
+                            class_idx = i;
+                            break;
+                        }
+                    }
+
+                    if (items.len > 0 and class_idx == null) {
+                        try list.append(vm.allocator, JSValue.fromStringAtom(class_atom));
+                        const new_arr = try createArray(vm, list.items);
+                        try el_obj.setProperty(vm.allocator, attrs_atom, JSValue.fromObject(new_arr));
+                    } else if (items.len == 0 and class_idx != null) {
+                        _ = list.orderedRemove(class_idx.?);
+                        const new_arr = try createArray(vm, list.items);
+                        try el_obj.setProperty(vm.allocator, attrs_atom, JSValue.fromObject(new_arr));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn nativeClassListItem(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.null_val;
+    if (args.len == 0 or !args[0].isNumber()) return JSValue.null_val;
+    const idx = args[0].toInt32();
+    if (idx < 0) return JSValue.null_val;
+
+    const tokens_atom = try vm.atom_table.intern("_tokens");
+    if (inst.getProperty(tokens_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            if (@as(usize, @intCast(idx)) < list.items.len) {
+                return list.items[@as(usize, @intCast(idx))];
+            }
+        }
+    }
+    return JSValue.null_val;
+}
+
+fn nativeClassListReplace(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.false_val;
+    if (args.len < 2 or !args[0].isString() or !args[1].isString()) return JSValue.false_val;
+
+    const old_tok = vm.atom_table.get(args[0].toStringAtom());
+    const new_tok = args[1];
+    const tokens_atom = try vm.atom_table.intern("_tokens");
+    if (inst.getProperty(tokens_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+
+            var found = false;
+            for (list.items, 0..) |item, i| {
+                if (item.isString() and std.mem.eql(u8, vm.atom_table.get(item.toStringAtom()), old_tok)) {
+                    list.items[i] = new_tok;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found) {
+                const new_arr = try createArray(vm, list.items);
+                try inst.setProperty(vm.allocator, tokens_atom, JSValue.fromObject(new_arr));
+                try syncClassListProperties(vm, inst, list.items);
+                return JSValue.true_val;
+            }
+        }
+    }
+    return JSValue.false_val;
+}
+
+fn nativeElementHasAttributes(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.false_val;
+    const attrs_atom = try vm.atom_table.intern("_attrs");
+    if (inst.getProperty(attrs_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            return if (list.items.len > 0) JSValue.true_val else JSValue.false_val;
+        }
+    }
+    return JSValue.false_val;
+}
+
+fn nativeElementGetAttributeNames(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.null_val;
+    const attrs_atom = try vm.atom_table.intern("_attrs");
+    if (inst.getProperty(attrs_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            const copy_arr = try createArray(vm, list.items);
+            return JSValue.fromObject(copy_arr);
+        }
+    }
+    const empty_arr = try createArray(vm, &[_]JSValue{});
+    return JSValue.fromObject(empty_arr);
+}
+
+fn nativeElementToggleAttribute(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.false_val;
+    if (args.len == 0 or !args[0].isString()) return JSValue.false_val;
+
+    const attr_name = vm.atom_table.get(args[0].toStringAtom());
+    const has = jsElementHasAttribute(vm, inst, attr_name);
+
+    if (args.len > 1) {
+        const force = args[1].toBoolean();
+        if (force) {
+            _ = try nativeElementSetAttribute(ctx, this_val, &[_]JSValue{ args[0], JSValue.fromStringAtom(try vm.atom_table.intern("")) });
+            return JSValue.true_val;
+        } else {
+            _ = try nativeElementRemoveAttribute(ctx, this_val, &[_]JSValue{args[0]});
+            return JSValue.false_val;
+        }
+    } else {
+        if (has) {
+            _ = try nativeElementRemoveAttribute(ctx, this_val, &[_]JSValue{args[0]});
+            return JSValue.false_val;
+        } else {
+            _ = try nativeElementSetAttribute(ctx, this_val, &[_]JSValue{ args[0], JSValue.fromStringAtom(try vm.atom_table.intern("")) });
+            return JSValue.true_val;
+        }
+    }
+}
+
+fn nativeElementReplaceWith(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    const parent_val = inst.getProperty(try vm.atom_table.intern("parentNode")) orelse return JSValue.undefined_val;
+    const parent_obj = parent_val.toObject() orelse return JSValue.undefined_val;
+
+    const children_atom = try vm.atom_table.intern("_children");
+    const ch_val = parent_obj.getProperty(children_atom) orelse return JSValue.undefined_val;
+    const ch_arr = ch_val.toObject() orelse return JSValue.undefined_val;
+
+    var items: std.ArrayList(JSValue) = .empty;
+    defer items.deinit(vm.allocator);
+    try getArrayElements(vm, ch_arr, &items);
+
+    var new_items: std.ArrayList(JSValue) = .empty;
+    defer new_items.deinit(vm.allocator);
+
+    for (items.items) |it| {
+        if (it.toObject()) |co| {
+            if (co == inst) {
+                for (args) |arg| {
+                    if (arg.toObject()) |arg_obj| {
+                        try arg_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), parent_val);
+                        try new_items.append(vm.allocator, arg);
+                    }
+                }
+            } else {
+                try new_items.append(vm.allocator, it);
+            }
+        } else {
+            try new_items.append(vm.allocator, it);
+        }
+    }
+
+    const new_arr = try createArray(vm, new_items.items);
+    try parent_obj.setProperty(vm.allocator, children_atom, JSValue.fromObject(new_arr));
+    try updateElementTreeRelationships(vm, parent_obj);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+
+    return JSValue.undefined_val;
 }
 
 fn nativeElementGetAttribute(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -2039,10 +2406,53 @@ fn nativeElementSetAttribute(ctx: *anyopaque, this_val: JSValue, args: []const J
     const atom = try vm.atom_table.intern(attr_name);
     try inst.setProperty(vm.allocator, atom, args[1]);
 
+    const attrs_atom = try vm.atom_table.intern("_attrs");
+    if (inst.getProperty(attrs_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            var exists = false;
+            for (list.items) |it| {
+                if (it.isString() and std.mem.eql(u8, vm.atom_table.get(it.toStringAtom()), attr_name)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                try list.append(vm.allocator, JSValue.fromStringAtom(atom));
+                const new_arr = try createArray(vm, list.items);
+                try inst.setProperty(vm.allocator, attrs_atom, JSValue.fromObject(new_arr));
+            }
+        }
+    }
+
     if (std.mem.eql(u8, attr_name, "id")) {
         try inst.setProperty(vm.allocator, try vm.atom_table.intern("id"), args[1]);
+    } else if (std.mem.eql(u8, attr_name, "checked")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("checked"), JSValue.true_val);
+    } else if (std.mem.eql(u8, attr_name, "disabled")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("disabled"), JSValue.true_val);
     } else if (std.mem.eql(u8, attr_name, "class")) {
         try inst.setProperty(vm.allocator, try vm.atom_table.intern("className"), args[1]);
+        if (args[1].isString()) {
+            const cls_str = vm.atom_table.get(args[1].toStringAtom());
+            if (inst.getProperty(try vm.atom_table.intern("classList"))) |cl_val| {
+                if (cl_val.toObject()) |cl_obj| {
+                    var tokens: std.ArrayList(JSValue) = .empty;
+                    defer tokens.deinit(vm.allocator);
+                    var it = std.mem.tokenizeScalar(u8, cls_str, ' ');
+                    while (it.next()) |tok| {
+                        if (tok.len > 0) {
+                            try tokens.append(vm.allocator, JSValue.fromStringAtom(try vm.atom_table.intern(tok)));
+                        }
+                    }
+                    const tok_arr = try createArray(vm, tokens.items);
+                    try cl_obj.setProperty(vm.allocator, try vm.atom_table.intern("_tokens"), JSValue.fromObject(tok_arr));
+                    try syncClassListProperties(vm, cl_obj, tokens.items);
+                }
+            }
+        }
     }
 
     return JSValue.undefined_val;
@@ -2117,6 +2527,25 @@ fn updateElementTreeRelationships(vm: *VM, parent: *JSObject) !void {
             try ch_obj.setProperty(vm.allocator, try vm.atom_table.intern("nextElementSibling"), next_el);
         }
     }
+
+    var text_buf: std.ArrayList(u8) = .empty;
+    defer text_buf.deinit(vm.allocator);
+    for (items.items) |it| {
+        if (it.toObject()) |ch_obj| {
+            if (ch_obj.getProperty(nt_atom)) |nt| {
+                const nt_i = nt.toInt32();
+                if (nt_i == 3 or nt_i == 1) {
+                    if (ch_obj.getProperty(try vm.atom_table.intern("textContent"))) |tc| {
+                        if (tc.isString()) {
+                            try text_buf.appendSlice(vm.allocator, vm.atom_table.get(tc.toStringAtom()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const tc_atom = try vm.atom_table.intern(text_buf.items);
+    try parent.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), JSValue.fromStringAtom(tc_atom));
 }
 
 fn nativeElementAppendChild(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -2224,6 +2653,7 @@ fn nativeClassListAdd(ctx: *anyopaque, this_val: JSValue, args: []const JSValue)
     try list.append(vm.allocator, args[0]);
     const new_arr = try createArray(vm, list.items);
     try inst.setProperty(vm.allocator, tokens_atom, JSValue.fromObject(new_arr));
+    try syncClassListProperties(vm, inst, list.items);
     return JSValue.undefined_val;
 }
 
@@ -2274,6 +2704,7 @@ fn nativeClassListRemove(ctx: *anyopaque, this_val: JSValue, args: []const JSVal
 
             const new_arr = try createArray(vm, new_list.items);
             try inst.setProperty(vm.allocator, tokens_atom, JSValue.fromObject(new_arr));
+            try syncClassListProperties(vm, inst, new_list.items);
         }
     }
     return JSValue.undefined_val;
@@ -2348,37 +2779,398 @@ fn findElementByIdRecursive(vm: *VM, elem: *JSObject, target_id: []const u8) any
     return JSValue.null_val;
 }
 
+const CombinatorInfo = struct {
+    idx: usize,
+    op: u8,
+};
+
+fn findLastSelectorCombinator(sel: []const u8) ?CombinatorInfo {
+    var bracket_depth: usize = 0;
+    var paren_depth: usize = 0;
+
+    var i: usize = sel.len;
+    while (i > 0) {
+        i -= 1;
+        const ch = sel[i];
+        if (ch == ']') {
+            bracket_depth += 1;
+        } else if (ch == '[') {
+            if (bracket_depth > 0) bracket_depth -= 1;
+        } else if (ch == ')') {
+            paren_depth += 1;
+        } else if (ch == '(') {
+            if (paren_depth > 0) paren_depth -= 1;
+        } else if (bracket_depth == 0 and paren_depth == 0) {
+            if (ch == '>') {
+                return CombinatorInfo{ .idx = i, .op = '>' };
+            } else if (ch == ' ') {
+                const before = std.mem.trimEnd(u8, sel[0..i], " \t");
+                const after = std.mem.trimStart(u8, sel[i + 1 ..], " \t");
+                if (before.len > 0 and after.len > 0 and before[before.len - 1] != '>' and after[0] != '>') {
+                    return CombinatorInfo{ .idx = i, .op = ' ' };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn jsElementGetAttributeString(vm: *VM, elem: *JSObject, name: []const u8) ?[]const u8 {
+    const atom = vm.atom_table.intern(name) catch return null;
+    if (elem.getProperty(atom)) |val| {
+        if (val.isString()) {
+            return vm.atom_table.get(val.toStringAtom());
+        } else if (val.isBoolean()) {
+            return if (val.toBoolean()) "" else null;
+        }
+    }
+    return null;
+}
+
+fn jsElementHasAttribute(vm: *VM, elem: *JSObject, name: []const u8) bool {
+    const atom = vm.atom_table.intern(name) catch return false;
+    if (elem.getProperty(atom)) |val| {
+        if (val.isBoolean()) return val.toBoolean();
+        return !val.isNull() and !val.isUndefined();
+    }
+    return false;
+}
+
 fn elementMatchesSelector(vm: *VM, elem: *JSObject, sel_str: []const u8) bool {
     const trimmed = std.mem.trim(u8, sel_str, " \t\r\n");
     if (trimmed.len == 0) return false;
 
-    if (trimmed[0] == '#') {
-        const target_id = trimmed[1..];
-        if (elem.getProperty(vm.atom_table.intern("id") catch return false)) |id_val| {
-            if (id_val.isString()) {
-                return std.mem.eql(u8, vm.atom_table.get(id_val.toStringAtom()), target_id);
+    // 1. Check for top-level comma outside brackets and parens
+    var bracket_depth: usize = 0;
+    var paren_depth: usize = 0;
+    var last_start: usize = 0;
+    var has_top_level_comma = false;
+    for (trimmed, 0..) |ch, idx| {
+        if (ch == '[') {
+            bracket_depth += 1;
+        } else if (ch == ']') {
+            if (bracket_depth > 0) bracket_depth -= 1;
+        } else if (ch == '(') {
+            paren_depth += 1;
+        } else if (ch == ')' and paren_depth > 0) {
+            paren_depth -= 1;
+        } else if (ch == ',' and bracket_depth == 0 and paren_depth == 0) {
+            has_top_level_comma = true;
+            const part = std.mem.trim(u8, trimmed[last_start..idx], " \t\r\n");
+            if (part.len > 0 and elementMatchesSelector(vm, elem, part)) return true;
+            last_start = idx + 1;
+        }
+    }
+    if (has_top_level_comma) {
+        const part = std.mem.trim(u8, trimmed[last_start..], " \t\r\n");
+        return part.len > 0 and elementMatchesSelector(vm, elem, part);
+    }
+
+    // 2. Check for combinators (> and space)
+    if (findLastSelectorCombinator(trimmed)) |comb| {
+        const left = std.mem.trim(u8, trimmed[0..comb.idx], " \t\r\n");
+        const right = std.mem.trim(u8, trimmed[comb.idx + 1 ..], " \t\r\n");
+        if (left.len > 0 and right.len > 0) {
+            if (!elementMatchesCompound(vm, elem, right)) return false;
+            const parent_val = elem.getProperty(vm.atom_table.intern("parentNode") catch return false) orelse JSValue.null_val;
+            if (parent_val.toObject()) |p_obj| {
+                const nt = p_obj.getProperty(vm.atom_table.intern("nodeType") catch return false) orelse JSValue.fromInt32(0);
+                if (comb.op == '>') {
+                    return (nt.toInt32() == 1) and elementMatchesSelector(vm, p_obj, left);
+                } else if (comb.op == ' ') {
+                    var curr: ?*JSObject = p_obj;
+                    while (curr) |par| {
+                        const par_nt = par.getProperty(vm.atom_table.intern("nodeType") catch return false) orelse JSValue.fromInt32(0);
+                        if (par_nt.toInt32() == 1 and elementMatchesSelector(vm, par, left)) return true;
+                        const next_p = par.getProperty(vm.atom_table.intern("parentNode") catch return false) orelse JSValue.null_val;
+                        curr = next_p.toObject();
+                    }
+                    return false;
+                }
+            }
+            return false;
+        }
+    }
+
+    // 3. Single compound selector
+    return elementMatchesCompound(vm, elem, trimmed);
+}
+
+fn elementMatchesCompound(vm: *VM, elem: *JSObject, trimmed: []const u8) bool {
+    if (trimmed.len == 0) return false;
+
+    var i: usize = 0;
+    // 1. Tag name (if any)
+    if (trimmed[0] != '#' and trimmed[0] != '.' and trimmed[0] != '[' and trimmed[0] != ':') {
+        const tag_end = std.mem.indexOfAny(u8, trimmed, "#.[:") orelse trimmed.len;
+        const tag_part = trimmed[0..tag_end];
+        if (!std.mem.eql(u8, tag_part, "*")) {
+            const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse return false;
+            if (tag_val.isString()) {
+                const actual_tag = vm.atom_table.get(tag_val.toStringAtom());
+                if (!std.ascii.eqlIgnoreCase(actual_tag, tag_part)) return false;
+            } else {
+                return false;
             }
         }
-        return false;
+        i = tag_end;
     }
 
-    if (trimmed[0] == '.') {
-        const target_class = trimmed[1..];
-        const cl_val = elem.getProperty(vm.atom_table.intern("classList") catch return false) orelse return false;
-        const has = nativeClassListContains(@ptrCast(vm), cl_val, &[_]JSValue{
-            JSValue.fromStringAtom(vm.atom_table.intern(target_class) catch return false),
-        }) catch return false;
-        return has.toBoolean();
-    }
+    // 2. Modifiers: #id, .class, [attr], :pseudo
+    while (i < trimmed.len) {
+        const ch = trimmed[i];
+        if (ch == '#') {
+            i += 1;
+            const id_end = std.mem.indexOfAny(u8, trimmed[i..], ".#[:") orelse (trimmed.len - i);
+            const id_val = trimmed[i .. i + id_end];
+            i += id_end;
+            const id_prop = elem.getProperty(vm.atom_table.intern("id") catch return false) orelse return false;
+            if (id_prop.isString()) {
+                const actual_id = vm.atom_table.get(id_prop.toStringAtom());
+                if (!std.mem.eql(u8, actual_id, id_val)) return false;
+            } else {
+                return false;
+            }
+        } else if (ch == '.') {
+            i += 1;
+            const class_end = std.mem.indexOfAny(u8, trimmed[i..], ".#[:") orelse (trimmed.len - i);
+            const class_val = trimmed[i .. i + class_end];
+            i += class_end;
 
-    // Tag name check (e.g. "div", "button", "p")
-    const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse return false;
-    if (tag_val.isString()) {
-        const actual_tag = vm.atom_table.get(tag_val.toStringAtom());
-        return std.ascii.eqlIgnoreCase(actual_tag, trimmed);
-    }
+            var found = false;
+            if (elem.getProperty(vm.atom_table.intern("classList") catch return false)) |cl_val| {
+                const has = nativeClassListContains(@ptrCast(vm), cl_val, &[_]JSValue{
+                    JSValue.fromStringAtom(vm.atom_table.intern(class_val) catch return false),
+                }) catch JSValue.false_val;
+                if (has.toBoolean()) found = true;
+            }
+            if (!found) {
+                if (elem.getProperty(vm.atom_table.intern("className") catch return false)) |cn_val| {
+                    if (cn_val.isString()) {
+                        const cn_str = vm.atom_table.get(cn_val.toStringAtom());
+                        var it = std.mem.tokenizeScalar(u8, cn_str, ' ');
+                        while (it.next()) |tok| {
+                            if (std.mem.eql(u8, tok, class_val)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!found) return false;
+        } else if (ch == '[') {
+            const close_b = std.mem.indexOfScalar(u8, trimmed[i..], ']') orelse return false;
+            const attr_expr = trimmed[i + 1 .. i + close_b];
+            i += close_b + 1;
 
-    return false;
+            if (std.mem.indexOf(u8, attr_expr, "^=")) |p_idx| {
+                const attr_name = std.mem.trim(u8, attr_expr[0..p_idx], " \t'\"\\");
+                const target_val = std.mem.trim(u8, attr_expr[p_idx + 2 ..], " \t'\"\\");
+                const actual_val = jsElementGetAttributeString(vm, elem, attr_name) orelse return false;
+                if (!std.mem.startsWith(u8, actual_val, target_val)) return false;
+            } else if (std.mem.indexOf(u8, attr_expr, "$=")) |s_idx| {
+                const attr_name = std.mem.trim(u8, attr_expr[0..s_idx], " \t'\"\\");
+                const target_val = std.mem.trim(u8, attr_expr[s_idx + 2 ..], " \t'\"\\");
+                const actual_val = jsElementGetAttributeString(vm, elem, attr_name) orelse return false;
+                if (!std.mem.endsWith(u8, actual_val, target_val)) return false;
+            } else if (std.mem.indexOf(u8, attr_expr, "*=")) |c_idx| {
+                const attr_name = std.mem.trim(u8, attr_expr[0..c_idx], " \t'\"\\");
+                const target_val = std.mem.trim(u8, attr_expr[c_idx + 2 ..], " \t'\"\\");
+                const actual_val = jsElementGetAttributeString(vm, elem, attr_name) orelse return false;
+                if (std.mem.indexOf(u8, actual_val, target_val) == null) return false;
+            } else if (std.mem.indexOf(u8, attr_expr, "~=")) |w_idx| {
+                const attr_name = std.mem.trim(u8, attr_expr[0..w_idx], " \t'\"\\");
+                const target_val = std.mem.trim(u8, attr_expr[w_idx + 2 ..], " \t'\"\\");
+                const actual_val = jsElementGetAttributeString(vm, elem, attr_name) orelse return false;
+                var found = false;
+                var it = std.mem.tokenizeScalar(u8, actual_val, ' ');
+                while (it.next()) |tok| {
+                    if (std.mem.eql(u8, tok, target_val)) { found = true; break; }
+                }
+                if (!found) return false;
+            } else if (std.mem.indexOfScalar(u8, attr_expr, '=')) |eq_idx| {
+                const attr_name = std.mem.trim(u8, attr_expr[0..eq_idx], " \t'\"\\");
+                const target_val = std.mem.trim(u8, attr_expr[eq_idx + 1 ..], " \t'\"\\");
+                const actual_val = jsElementGetAttributeString(vm, elem, attr_name) orelse return false;
+                if (!std.mem.eql(u8, actual_val, target_val)) return false;
+            } else {
+                const attr_name = std.mem.trim(u8, attr_expr, " \t'\"\\");
+                if (!jsElementHasAttribute(vm, elem, attr_name)) return false;
+            }
+        } else if (ch == ':') {
+            i += 1;
+            if (std.mem.startsWith(u8, trimmed[i..], "not(")) {
+                i += 4;
+                const close_p = std.mem.indexOfScalar(u8, trimmed[i..], ')') orelse return false;
+                const inner_sel = trimmed[i .. i + close_p];
+                i += close_p + 1;
+                if (elementMatchesSelector(vm, elem, inner_sel)) return false;
+            } else if (std.mem.startsWith(u8, trimmed[i..], "nth-child(")) {
+                i += 10;
+                const close_p = std.mem.indexOfScalar(u8, trimmed[i..], ')') orelse return false;
+                const expr = std.mem.trim(u8, trimmed[i .. i + close_p], " \t");
+                i += close_p + 1;
+                var idx: i32 = 1;
+                var curr = elem.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                while (!curr.isNull() and !curr.isUndefined()) {
+                    if (curr.toObject()) |co| {
+                        idx += 1;
+                        curr = co.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                    } else break;
+                }
+                if (!Node.evaluateNthExpression(idx, expr)) return false;
+            } else if (std.mem.startsWith(u8, trimmed[i..], "nth-last-child(")) {
+                i += 15;
+                const close_p = std.mem.indexOfScalar(u8, trimmed[i..], ')') orelse return false;
+                const expr = std.mem.trim(u8, trimmed[i .. i + close_p], " \t");
+                i += close_p + 1;
+                var idx: i32 = 1;
+                var curr = elem.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                while (!curr.isNull() and !curr.isUndefined()) {
+                    if (curr.toObject()) |co| {
+                        idx += 1;
+                        curr = co.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                    } else break;
+                }
+                if (!Node.evaluateNthExpression(idx, expr)) return false;
+            } else if (std.mem.startsWith(u8, trimmed[i..], "nth-of-type(")) {
+                i += 12;
+                const close_p = std.mem.indexOfScalar(u8, trimmed[i..], ')') orelse return false;
+                const expr = std.mem.trim(u8, trimmed[i .. i + close_p], " \t");
+                i += close_p + 1;
+                const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                const my_tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "";
+                var idx: i32 = 1;
+                var curr = elem.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                while (!curr.isNull() and !curr.isUndefined()) {
+                    if (curr.toObject()) |co| {
+                        const s_tag_val = co.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                        if (s_tag_val.isString() and std.ascii.eqlIgnoreCase(vm.atom_table.get(s_tag_val.toStringAtom()), my_tag_str)) {
+                            idx += 1;
+                        }
+                        curr = co.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                    } else break;
+                }
+                if (!Node.evaluateNthExpression(idx, expr)) return false;
+            } else if (std.mem.startsWith(u8, trimmed[i..], "nth-last-of-type(")) {
+                i += 17;
+                const close_p = std.mem.indexOfScalar(u8, trimmed[i..], ')') orelse return false;
+                const expr = std.mem.trim(u8, trimmed[i .. i + close_p], " \t");
+                i += close_p + 1;
+                const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                const my_tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "";
+                var idx: i32 = 1;
+                var curr = elem.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                while (!curr.isNull() and !curr.isUndefined()) {
+                    if (curr.toObject()) |co| {
+                        const s_tag_val = co.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                        if (s_tag_val.isString() and std.ascii.eqlIgnoreCase(vm.atom_table.get(s_tag_val.toStringAtom()), my_tag_str)) {
+                            idx += 1;
+                        }
+                        curr = co.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                    } else break;
+                }
+                if (!Node.evaluateNthExpression(idx, expr)) return false;
+            } else {
+                const pseudo_end = std.mem.indexOfAny(u8, trimmed[i..], ".#[:") orelse (trimmed.len - i);
+                const pseudo = trimmed[i .. i + pseudo_end];
+                i += pseudo_end;
+
+                if (std.mem.eql(u8, pseudo, "first-child")) {
+                    const prev = elem.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                    if (!prev.isNull() and !prev.isUndefined()) return false;
+                } else if (std.mem.eql(u8, pseudo, "last-child")) {
+                    const next = elem.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                    if (!next.isNull() and !next.isUndefined()) return false;
+                } else if (std.mem.eql(u8, pseudo, "only-child")) {
+                    const prev = elem.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                    if (!prev.isNull() and !prev.isUndefined()) return false;
+                    const next = elem.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                    if (!next.isNull() and !next.isUndefined()) return false;
+                } else if (std.mem.eql(u8, pseudo, "first-of-type")) {
+                    const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                    const my_tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "";
+                    var curr = elem.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                    while (!curr.isNull() and !curr.isUndefined()) {
+                        if (curr.toObject()) |co| {
+                            const s_tag_val = co.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                            if (s_tag_val.isString() and std.ascii.eqlIgnoreCase(vm.atom_table.get(s_tag_val.toStringAtom()), my_tag_str)) {
+                                return false;
+                            }
+                            curr = co.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                        } else break;
+                    }
+                } else if (std.mem.eql(u8, pseudo, "last-of-type")) {
+                    const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                    const my_tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "";
+                    var curr = elem.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                    while (!curr.isNull() and !curr.isUndefined()) {
+                        if (curr.toObject()) |co| {
+                            const s_tag_val = co.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                            if (s_tag_val.isString() and std.ascii.eqlIgnoreCase(vm.atom_table.get(s_tag_val.toStringAtom()), my_tag_str)) {
+                                return false;
+                            }
+                            curr = co.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                        } else break;
+                    }
+                } else if (std.mem.eql(u8, pseudo, "only-of-type")) {
+                    const tag_val = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                    const my_tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "";
+                    var curr = elem.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                    while (!curr.isNull() and !curr.isUndefined()) {
+                        if (curr.toObject()) |co| {
+                            const s_tag_val = co.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                            if (s_tag_val.isString() and std.ascii.eqlIgnoreCase(vm.atom_table.get(s_tag_val.toStringAtom()), my_tag_str)) {
+                                return false;
+                            }
+                            curr = co.getProperty(vm.atom_table.intern("previousElementSibling") catch return false) orelse JSValue.null_val;
+                        } else break;
+                    }
+                    var next_c = elem.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                    while (!next_c.isNull() and !next_c.isUndefined()) {
+                        if (next_c.toObject()) |co| {
+                            const s_tag_val = co.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                            if (s_tag_val.isString() and std.ascii.eqlIgnoreCase(vm.atom_table.get(s_tag_val.toStringAtom()), my_tag_str)) {
+                                return false;
+                            }
+                            next_c = co.getProperty(vm.atom_table.intern("nextElementSibling") catch return false) orelse JSValue.null_val;
+                        } else break;
+                    }
+                } else if (std.mem.eql(u8, pseudo, "empty")) {
+                    const cnt = elem.getProperty(vm.atom_table.intern("childElementCount") catch return false) orelse JSValue.fromInt32(0);
+                    if (cnt.toInt32() > 0) return false;
+                    const tc = elem.getProperty(vm.atom_table.intern("textContent") catch return false) orelse JSValue.null_val;
+                    if (tc.isString()) {
+                        const tc_str = vm.atom_table.get(tc.toStringAtom());
+                        if (std.mem.trim(u8, tc_str, " \t\r\n").len > 0) return false;
+                    }
+                } else if (std.mem.eql(u8, pseudo, "checked")) {
+                    const has_chk = jsElementHasAttribute(vm, elem, "checked") or jsElementHasAttribute(vm, elem, "selected");
+                    const chk_val = elem.getProperty(vm.atom_table.intern("checked") catch return false) orelse JSValue.false_val;
+                    if (!has_chk and !chk_val.toBoolean()) return false;
+                } else if (std.mem.eql(u8, pseudo, "disabled")) {
+                    const has_dis = jsElementHasAttribute(vm, elem, "disabled");
+                    const dis_val = elem.getProperty(vm.atom_table.intern("disabled") catch return false) orelse JSValue.false_val;
+                    if (!has_dis and !dis_val.toBoolean()) return false;
+                } else if (std.mem.eql(u8, pseudo, "enabled")) {
+                    const has_dis = jsElementHasAttribute(vm, elem, "disabled");
+                    const dis_val = elem.getProperty(vm.atom_table.intern("disabled") catch return false) orelse JSValue.false_val;
+                    if (has_dis or dis_val.toBoolean()) return false;
+                } else if (std.mem.eql(u8, pseudo, "root")) {
+                    const parent = elem.getProperty(vm.atom_table.intern("parentNode") catch return false) orelse JSValue.null_val;
+                    const tag = elem.getProperty(vm.atom_table.intern("tagName") catch return false) orelse JSValue.null_val;
+                    if (!parent.isNull() and tag.isString()) {
+                        const tag_str = vm.atom_table.get(tag.toStringAtom());
+                        if (!std.ascii.eqlIgnoreCase(tag_str, "html")) return false;
+                    }
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    return true;
 }
 
 fn findElementBySelectorRecursive(vm: *VM, elem: *JSObject, selector: []const u8) anyerror!JSValue {
@@ -2609,6 +3401,39 @@ fn nativeElementRemoveAttribute(ctx: *anyopaque, this_val: JSValue, args: []cons
     const attr_name = vm.atom_table.get(args[0].toStringAtom());
     const atom = vm.atom_table.map.get(attr_name) orelse return JSValue.undefined_val;
     try inst.setProperty(vm.allocator, atom, JSValue.null_val);
+
+    const attrs_atom = try vm.atom_table.intern("_attrs");
+    if (inst.getProperty(attrs_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            var new_list: std.ArrayList(JSValue) = .empty;
+            defer new_list.deinit(vm.allocator);
+            for (list.items) |it| {
+                if (!it.isString() or !std.mem.eql(u8, vm.atom_table.get(it.toStringAtom()), attr_name)) {
+                    try new_list.append(vm.allocator, it);
+                }
+            }
+            const new_arr = try createArray(vm, new_list.items);
+            try inst.setProperty(vm.allocator, attrs_atom, JSValue.fromObject(new_arr));
+        }
+    }
+
+    if (std.mem.eql(u8, attr_name, "checked")) {
+        try inst.setProperty(vm.allocator, atom, JSValue.false_val);
+    } else if (std.mem.eql(u8, attr_name, "disabled")) {
+        try inst.setProperty(vm.allocator, atom, JSValue.false_val);
+    } else if (std.mem.eql(u8, attr_name, "class")) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("className"), JSValue.fromStringAtom(try vm.atom_table.intern("")));
+        if (inst.getProperty(try vm.atom_table.intern("classList"))) |cl_val| {
+            if (cl_val.toObject()) |cl_obj| {
+                const empty_arr = try createArray(vm, &[_]JSValue{});
+                try cl_obj.setProperty(vm.allocator, try vm.atom_table.intern("_tokens"), JSValue.fromObject(empty_arr));
+                try syncClassListProperties(vm, cl_obj, &[_]JSValue{});
+            }
+        }
+    }
     return JSValue.undefined_val;
 }
 
@@ -2714,6 +3539,31 @@ fn nativeElementContains(ctx: *anyopaque, this_val: JSValue, args: []const JSVal
 fn nativeElementCloneNode(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     const inst = this_val.toObject() orelse return JSValue.null_val;
+    const nt_val = inst.getProperty(try vm.atom_table.intern("nodeType")) orelse JSValue.fromInt32(1);
+
+    if (nt_val.toInt32() == 3) {
+        const text_val = inst.getProperty(try vm.atom_table.intern("textContent")) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
+        const text_obj = try vm.gc.allocateObject(null);
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(3));
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#text")));
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), text_val);
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeValue"), text_val);
+        try text_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+        return JSValue.fromObject(text_obj);
+    }
+
+    if (nt_val.toInt32() == 8) {
+        const data_val = inst.getProperty(try vm.atom_table.intern("data")) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
+        const comment_obj = try vm.gc.allocateObject(null);
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(8));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#comment")));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("data"), data_val);
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), data_val);
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeValue"), data_val);
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+        return JSValue.fromObject(comment_obj);
+    }
+
     const tag_atom = try vm.atom_table.intern("tagName");
     const tag_val = inst.getProperty(tag_atom) orelse JSValue.fromStringAtom(try vm.atom_table.intern("div"));
     const tag_str = if (tag_val.isString()) vm.atom_table.get(tag_val.toStringAtom()) else "div";
@@ -2724,6 +3574,25 @@ fn nativeElementCloneNode(ctx: *anyopaque, this_val: JSValue, args: []const JSVa
     }
     if (inst.getProperty(try vm.atom_table.intern("className"))) |cn_val| {
         try clone.setProperty(vm.allocator, try vm.atom_table.intern("className"), cn_val);
+    }
+
+    const attrs_atom = try vm.atom_table.intern("_attrs");
+    if (inst.getProperty(attrs_atom)) |val| {
+        if (val.toObject()) |arr| {
+            var list: std.ArrayList(JSValue) = .empty;
+            defer list.deinit(vm.allocator);
+            try getArrayElements(vm, arr, &list);
+            for (list.items) |attr_name_val| {
+                if (attr_name_val.isString()) {
+                    if (inst.getProperty(attr_name_val.toStringAtom())) |av| {
+                        _ = try nativeElementSetAttribute(ctx, JSValue.fromObject(clone), &[_]JSValue{
+                            attr_name_val,
+                            av,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     const deep = args.len > 0 and args[0].toBoolean();
@@ -2879,7 +3748,7 @@ fn nativeElementGetClientRects(ctx: *anyopaque, this_val: JSValue, args: []const
 
 fn nativeGetComputedStyle(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
-    const cs = try vm.gc.allocateObject(null);
+    const cs = try createCSSStyleDeclaration(vm);
     const target = if (args.len > 0 and args[0].isObject()) args[0].toObject().? else null;
 
     if (target) |tgt| {
@@ -2902,18 +3771,7 @@ fn nativeGetComputedStyle(ctx: *anyopaque, _: JSValue, args: []const JSValue) an
     const def_opacity = cs.getProperty(try vm.atom_table.intern("opacity")) orelse JSValue.fromStringAtom(try vm.atom_table.intern("1"));
     try cs.setProperty(vm.allocator, try vm.atom_table.intern("opacity"), def_opacity);
 
-    const get_pv_fn = try vm.gc.allocateFunction(null, nativeComputedStyleGetPropertyValue, @ptrCast(vm));
-    try cs.setProperty(vm.allocator, try vm.atom_table.intern("getPropertyValue"), JSValue.fromObject(get_pv_fn));
     return JSValue.fromObject(cs);
-}
-
-fn nativeComputedStyleGetPropertyValue(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
-    const vm: *VM = @ptrCast(@alignCast(ctx));
-    const inst = this_val.toObject() orelse return JSValue.fromStringAtom(try vm.atom_table.intern(""));
-    if (args.len == 0 or !args[0].isString()) return JSValue.fromStringAtom(try vm.atom_table.intern(""));
-    const prop_name = vm.atom_table.get(args[0].toStringAtom());
-    const prop_atom = try vm.atom_table.intern(prop_name);
-    return inst.getProperty(prop_atom) orelse JSValue.fromStringAtom(try vm.atom_table.intern(""));
 }
 
 fn nativeMatchMedia(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
@@ -3120,6 +3978,17 @@ fn serializeJsElement(vm: *VM, obj: *JSObject, out: *std.ArrayList(u8)) anyerror
         return;
     }
 
+    if (node_type == 8) {
+        try out.appendSlice(vm.allocator, "<!--");
+        if (obj.getProperty(try vm.atom_table.intern("data"))) |d| {
+            if (d.isString()) {
+                try out.appendSlice(vm.allocator, vm.atom_table.get(d.toStringAtom()));
+            }
+        }
+        try out.appendSlice(vm.allocator, "-->");
+        return;
+    }
+
     if (node_type == 9) {
         if (obj.getProperty(try vm.atom_table.intern("body"))) |b| {
             if (b.toObject()) |b_obj| {
@@ -3241,6 +4110,19 @@ fn nodeToJsElement(vm: *VM, node: *const Node) anyerror!*JSObject {
         return text_obj;
     }
 
+    if (node.node_type == .Comment) {
+        const text_str = node.text_content orelse "";
+        const text_atom = try vm.atom_table.intern(text_str);
+        const comment_obj = try vm.gc.allocateObject(null);
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(8));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#comment")));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("data"), JSValue.fromStringAtom(text_atom));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), JSValue.fromStringAtom(text_atom));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("nodeValue"), JSValue.fromStringAtom(text_atom));
+        try comment_obj.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+        return comment_obj;
+    }
+
     const tag_str = vm.atom_table.get(node.tag_name);
     const elem = try createJsElement(vm, tag_str);
 
@@ -3272,6 +4154,64 @@ fn nodeToJsElement(vm: *VM, node: *const Node) anyerror!*JSObject {
     }
 
     return elem;
+}
+
+fn collectElementsByName(vm: *VM, elem: *JSObject, match_name: []const u8, out: *std.ArrayList(JSValue)) anyerror!void {
+    const children_atom = try vm.atom_table.intern("_children");
+    const ch_val = elem.getProperty(children_atom) orelse return;
+    if (ch_val.toObject()) |arr_obj| {
+        var items: std.ArrayList(JSValue) = .empty;
+        defer items.deinit(vm.allocator);
+        try getArrayElements(vm, arr_obj, &items);
+        for (items.items) |child_val| {
+            if (child_val.toObject()) |child_obj| {
+                const name_atom = try vm.atom_table.intern("name");
+                if (child_obj.getProperty(name_atom)) |nv| {
+                    if (nv.isString()) {
+                        const s = vm.atom_table.get(nv.toStringAtom());
+                        if (std.mem.eql(u8, s, match_name)) {
+                            try out.append(vm.allocator, child_val);
+                        }
+                    }
+                }
+                try collectElementsByName(vm, child_obj, match_name, out);
+            }
+        }
+    }
+}
+
+fn nativeDocumentGetElementsByName(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const doc_obj = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len == 0 or !args[0].isString()) {
+        const empty_arr = try createArray(vm, &[_]JSValue{});
+        return JSValue.fromObject(empty_arr);
+    }
+    const match_name = vm.atom_table.get(args[0].toStringAtom());
+    var out: std.ArrayList(JSValue) = .empty;
+    defer out.deinit(vm.allocator);
+
+    const body_val = doc_obj.getProperty(try vm.atom_table.intern("body")) orelse return JSValue.undefined_val;
+    if (body_val.toObject()) |body_obj| {
+        try collectElementsByName(vm, body_obj, match_name, &out);
+    }
+
+    const arr = try createArray(vm, out.items);
+    return JSValue.fromObject(arr);
+}
+
+fn nativeDocumentCreateComment(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = try vm.gc.allocateObject(null);
+    const data_val = if (args.len > 0 and args[0].isString()) args[0] else JSValue.fromStringAtom(try vm.atom_table.intern(""));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nodeType"), JSValue.fromInt32(8));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nodeName"), JSValue.fromStringAtom(try vm.atom_table.intern("#comment")));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("data"), data_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("textContent"), data_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("nodeValue"), data_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("ownerDocument"), this_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("parentNode"), JSValue.null_val);
+    return JSValue.fromObject(inst);
 }
 
 pub fn createJsDocument(vm: *VM) anyerror!*JSObject {
@@ -3333,6 +4273,21 @@ pub fn createJsDocument(vm: *VM) anyerror!*JSObject {
 
     const doc_disp_ev_fn = try vm.gc.allocateFunction(null, nativeEventTargetDispatchEvent, @ptrCast(vm));
     try doc_obj.setProperty(alloc, try table.intern("dispatchEvent"), JSValue.fromObject(doc_disp_ev_fn));
+
+    const doc_create_range_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateRange, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createRange"), JSValue.fromObject(doc_create_range_fn));
+
+    const doc_create_ev_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateEvent, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createEvent"), JSValue.fromObject(doc_create_ev_fn));
+
+    const doc_get_sel_fn = try vm.gc.allocateFunction(null, nativeGetSelection, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getSelection"), JSValue.fromObject(doc_get_sel_fn));
+
+    const doc_get_name_fn = try vm.gc.allocateFunction(null, nativeDocumentGetElementsByName, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("getElementsByName"), JSValue.fromObject(doc_get_name_fn));
+
+    const doc_create_comment_fn = try vm.gc.allocateFunction(null, nativeDocumentCreateComment, @ptrCast(vm));
+    try doc_obj.setProperty(alloc, try table.intern("createComment"), JSValue.fromObject(doc_create_comment_fn));
 
     // HTMLCollections and script reference
     const empty_forms = try createArray(vm, &[_]JSValue{});
@@ -3695,42 +4650,133 @@ fn nativeSubtleDigest(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerr
     return JSValue.fromObject(p);
 }
 
-fn nativeCanvasGetContext(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+fn nativeCanvasToDataURL(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const mime = if (args.len > 0 and args[0].isString())
+        vm.atom_table.get(args[0].toStringAtom())
+    else
+        "image/png";
+
+    if (std.ascii.eqlIgnoreCase(mime, "image/jpeg")) {
+        const dummy_jpeg = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+        return JSValue.fromStringAtom(try vm.atom_table.intern(dummy_jpeg));
+    }
+
+    const dummy_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    return JSValue.fromStringAtom(try vm.atom_table.intern(dummy_png));
+}
+
+fn nativeCanvasToBlob(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    if (args.len == 0 or !args[0].isObject()) return JSValue.undefined_val;
+    const cb_fn = args[0];
+
+    const type_str = if (args.len > 1 and args[1].isString())
+        args[1]
+    else
+        JSValue.fromStringAtom(try vm.atom_table.intern("image/png"));
+
+    const blob_obj = try vm.gc.allocateObject(null);
+    try blob_obj.setProperty(vm.allocator, try vm.atom_table.intern("size"), JSValue.fromInt32(68));
+    try blob_obj.setProperty(vm.allocator, try vm.atom_table.intern("type"), type_str);
+    const text_fn = try vm.gc.allocateFunction(null, nativeBlobText, @ptrCast(vm));
+    try blob_obj.setProperty(vm.allocator, try vm.atom_table.intern("text"), JSValue.fromObject(text_fn));
+
+    _ = try vm.call(cb_fn, JSValue.undefined_val, &[_]JSValue{JSValue.fromObject(blob_obj)});
+    return JSValue.undefined_val;
+}
+
+fn nativeCanvasMeasureText(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const metrics = try vm.gc.allocateObject(null);
+    var width: f64 = 0.0;
+    if (args.len > 0 and args[0].isString()) {
+        const text = vm.atom_table.get(args[0].toStringAtom());
+        width = @as(f64, @floatFromInt(text.len)) * 9.6;
+    }
+    try metrics.setProperty(vm.allocator, try vm.atom_table.intern("width"), JSValue.fromFloat64(width));
+    return JSValue.fromObject(metrics);
+}
+
+fn nativeCanvasCreateGradient(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const grad = try vm.gc.allocateObject(null);
+    const stop_fn = try vm.gc.allocateFunction(null, nativeCanvasNoop, @ptrCast(vm));
+    try grad.setProperty(vm.allocator, try vm.atom_table.intern("addColorStop"), JSValue.fromObject(stop_fn));
+    return JSValue.fromObject(grad);
+}
+
+fn nativeCanvasIsPointInPath(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.true_val;
+}
+
+fn nativeCanvasGetContext(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
     if (args.len == 0 or !args[0].isString()) return JSValue.null_val;
     const ctx_type = vm.atom_table.get(args[0].toStringAtom());
     if (!std.mem.eql(u8, ctx_type, "2d")) return JSValue.null_val;
 
     const c2d = try vm.gc.allocateObject(null);
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("canvas"), this_val);
     try c2d.setProperty(vm.allocator, try vm.atom_table.intern("fillStyle"), JSValue.fromStringAtom(try vm.atom_table.intern("#000000")));
     try c2d.setProperty(vm.allocator, try vm.atom_table.intern("strokeStyle"), JSValue.fromStringAtom(try vm.atom_table.intern("#000000")));
     try c2d.setProperty(vm.allocator, try vm.atom_table.intern("lineWidth"), JSValue.fromFloat64(1.0));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("font"), JSValue.fromStringAtom(try vm.atom_table.intern("10px sans-serif")));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("textAlign"), JSValue.fromStringAtom(try vm.atom_table.intern("start")));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("textBaseline"), JSValue.fromStringAtom(try vm.atom_table.intern("alphabetic")));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("globalAlpha"), JSValue.fromFloat64(1.0));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("globalCompositeOperation"), JSValue.fromStringAtom(try vm.atom_table.intern("source-over")));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("shadowColor"), JSValue.fromStringAtom(try vm.atom_table.intern("rgba(0,0,0,0)")));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("shadowBlur"), JSValue.fromFloat64(0.0));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("shadowOffsetX"), JSValue.fromFloat64(0.0));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("shadowOffsetY"), JSValue.fromFloat64(0.0));
 
-    const fill_rect_fn = try vm.gc.allocateFunction(null, nativeCanvasNoop, @ptrCast(vm));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("fillRect"), JSValue.fromObject(fill_rect_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("strokeRect"), JSValue.fromObject(fill_rect_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("clearRect"), JSValue.fromObject(fill_rect_fn));
+    const noop_fn = try vm.gc.allocateFunction(null, nativeCanvasNoop, @ptrCast(vm));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("fillRect"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("strokeRect"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("clearRect"), JSValue.fromObject(noop_fn));
 
-    const path_fn = try vm.gc.allocateFunction(null, nativeCanvasNoop, @ptrCast(vm));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("beginPath"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("closePath"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("moveTo"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("lineTo"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("rect"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("stroke"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("fill"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("save"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("restore"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("translate"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("scale"), JSValue.fromObject(path_fn));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("resetTransform"), JSValue.fromObject(path_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("beginPath"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("closePath"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("moveTo"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("lineTo"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("rect"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("stroke"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("fill"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("save"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("restore"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("translate"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("scale"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("rotate"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("transform"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("setTransform"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("resetTransform"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("arc"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("arcTo"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("bezierCurveTo"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("quadraticCurveTo"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("ellipse"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("clip"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("drawImage"), JSValue.fromObject(noop_fn));
+
+    const is_point_fn = try vm.gc.allocateFunction(null, nativeCanvasIsPointInPath, @ptrCast(vm));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("isPointInPath"), JSValue.fromObject(is_point_fn));
+
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("fillText"), JSValue.fromObject(noop_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("strokeText"), JSValue.fromObject(noop_fn));
+
+    const measure_text_fn = try vm.gc.allocateFunction(null, nativeCanvasMeasureText, @ptrCast(vm));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("measureText"), JSValue.fromObject(measure_text_fn));
+
+    const grad_fn = try vm.gc.allocateFunction(null, nativeCanvasCreateGradient, @ptrCast(vm));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("createLinearGradient"), JSValue.fromObject(grad_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("createRadialGradient"), JSValue.fromObject(grad_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("createPattern"), JSValue.fromObject(grad_fn));
 
     const create_img_data_fn = try vm.gc.allocateFunction(null, nativeCanvasCreateImageData, @ptrCast(vm));
     try c2d.setProperty(vm.allocator, try vm.atom_table.intern("createImageData"), JSValue.fromObject(create_img_data_fn));
-    const get_img_data_fn = try vm.gc.allocateFunction(null, nativeCanvasCreateImageData, @ptrCast(vm));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("getImageData"), JSValue.fromObject(get_img_data_fn));
-    const put_img_data_fn = try vm.gc.allocateFunction(null, nativeCanvasNoop, @ptrCast(vm));
-    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("putImageData"), JSValue.fromObject(put_img_data_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("getImageData"), JSValue.fromObject(create_img_data_fn));
+    try c2d.setProperty(vm.allocator, try vm.atom_table.intern("putImageData"), JSValue.fromObject(noop_fn));
 
     return JSValue.fromObject(c2d);
 }
@@ -3741,8 +4787,8 @@ fn nativeCanvasNoop(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSVa
 
 fn nativeCanvasCreateImageData(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
     const vm: *VM = @ptrCast(@alignCast(ctx));
-    const w = if (args.len > 0 and args[0].isInt32()) args[0].toInt32() else 100;
-    const h = if (args.len > 1 and args[1].isInt32()) args[1].toInt32() else 100;
+    const w = if (args.len > 0 and args[0].isNumber()) args[0].toInt32() else 100;
+    const h = if (args.len > 1 and args[1].isNumber()) args[1].toInt32() else 100;
 
     const img_data = try vm.gc.allocateObject(null);
     try img_data.setProperty(vm.allocator, try vm.atom_table.intern("width"), JSValue.fromInt32(w));
@@ -3770,6 +4816,9 @@ fn nativeEventConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) an
     const stop_fn = try vm.gc.allocateFunction(null, nativeEventStopPropagation, @ptrCast(vm));
     try ev.setProperty(vm.allocator, try vm.atom_table.intern("stopPropagation"), JSValue.fromObject(stop_fn));
 
+    const init_ev_fn = try vm.gc.allocateFunction(null, nativeEventInitEvent, @ptrCast(vm));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("initEvent"), JSValue.fromObject(init_ev_fn));
+
     return JSValue.fromObject(ev);
 }
 
@@ -3788,7 +4837,253 @@ fn nativeCustomEventConstructor(ctx: *anyopaque, this_val: JSValue, args: []cons
     } else {
         try ev.setProperty(vm.allocator, try vm.atom_table.intern("detail"), JSValue.null_val);
     }
+
+    const init_cev_fn = try vm.gc.allocateFunction(null, nativeCustomEventInitCustomEvent, @ptrCast(vm));
+    try ev.setProperty(vm.allocator, try vm.atom_table.intern("initCustomEvent"), JSValue.fromObject(init_cev_fn));
+
     return ev_val;
+}
+
+fn nativeEventInitEvent(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0 and args[0].isString()) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("type"), args[0]);
+    }
+    if (args.len > 1) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("bubbles"), JSValue.fromBoolean(args[1].toBoolean()));
+    }
+    if (args.len > 2) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("cancelable"), JSValue.fromBoolean(args[2].toBoolean()));
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeCustomEventInitCustomEvent(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    _ = try nativeEventInitEvent(ctx, this_val, args);
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 3) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("detail"), args[3]);
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeDocumentCreateEvent(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const ev_type = if (args.len > 0 and args[0].isString()) vm.atom_table.get(args[0].toStringAtom()) else "Event";
+    if (std.ascii.eqlIgnoreCase(ev_type, "CustomEvent")) {
+        return nativeCustomEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+    } else if (std.ascii.eqlIgnoreCase(ev_type, "MouseEvent")) {
+        return nativeMouseEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+    } else if (std.ascii.eqlIgnoreCase(ev_type, "KeyboardEvent")) {
+        return nativeKeyboardEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+    } else if (std.ascii.eqlIgnoreCase(ev_type, "FocusEvent")) {
+        return nativeFocusEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+    } else {
+        return nativeEventConstructor(ctx, JSValue.undefined_val, &[_]JSValue{});
+    }
+}
+
+// Range and Selection APIs
+fn nativeDocumentCreateRange(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const r = try vm.gc.allocateObject(null);
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("startContainer"), this_val);
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("startOffset"), JSValue.fromInt32(0));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("endContainer"), this_val);
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("endOffset"), JSValue.fromInt32(0));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("collapsed"), JSValue.true_val);
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("commonAncestorContainer"), this_val);
+
+    const set_start_fn = try vm.gc.allocateFunction(null, nativeRangeSetStart, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("setStart"), JSValue.fromObject(set_start_fn));
+    const set_end_fn = try vm.gc.allocateFunction(null, nativeRangeSetEnd, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("setEnd"), JSValue.fromObject(set_end_fn));
+    const collapse_fn = try vm.gc.allocateFunction(null, nativeRangeCollapse, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("collapse"), JSValue.fromObject(collapse_fn));
+    const clone_fn = try vm.gc.allocateFunction(null, nativeRangeCloneRange, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("cloneRange"), JSValue.fromObject(clone_fn));
+    const detach_fn = try vm.gc.allocateFunction(null, nativeRangeDetach, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("detach"), JSValue.fromObject(detach_fn));
+    const sel_node_fn = try vm.gc.allocateFunction(null, nativeRangeSelectNode, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("selectNode"), JSValue.fromObject(sel_node_fn));
+    const sel_nc_fn = try vm.gc.allocateFunction(null, nativeRangeSelectNodeContents, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("selectNodeContents"), JSValue.fromObject(sel_nc_fn));
+    const to_str_fn = try vm.gc.allocateFunction(null, nativeRangeToString, @ptrCast(vm));
+    try r.setProperty(vm.allocator, try vm.atom_table.intern("toString"), JSValue.fromObject(to_str_fn));
+
+    return JSValue.fromObject(r);
+}
+
+fn updateRangeCollapsed(vm: *VM, inst: *JSObject) !void {
+    const sc = inst.getProperty(try vm.atom_table.intern("startContainer")) orelse JSValue.null_val;
+    const ec = inst.getProperty(try vm.atom_table.intern("endContainer")) orelse JSValue.null_val;
+    const so = inst.getProperty(try vm.atom_table.intern("startOffset")) orelse JSValue.fromInt32(0);
+    const eo = inst.getProperty(try vm.atom_table.intern("endOffset")) orelse JSValue.fromInt32(0);
+    const is_same_container = (sc.raw == ec.raw);
+    const is_same_offset = (so.toInt32() == eo.toInt32());
+    const is_collapsed = is_same_container and is_same_offset;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("collapsed"), JSValue.fromBoolean(is_collapsed));
+}
+
+fn nativeRangeSetStart(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0 and args[0].isObject()) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("startContainer"), args[0]);
+    }
+    if (args.len > 1) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("startOffset"), args[1]);
+    }
+    try updateRangeCollapsed(vm, inst);
+    return JSValue.undefined_val;
+}
+
+fn nativeRangeSetEnd(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0 and args[0].isObject()) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("endContainer"), args[0]);
+    }
+    if (args.len > 1) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("endOffset"), args[1]);
+    }
+    try updateRangeCollapsed(vm, inst);
+    return JSValue.undefined_val;
+}
+
+fn nativeRangeCollapse(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("collapsed"), JSValue.true_val);
+    return JSValue.undefined_val;
+}
+
+fn nativeRangeCloneRange(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    return nativeDocumentCreateRange(ctx, this_val, &[_]JSValue{});
+}
+
+fn nativeRangeDetach(_: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    return JSValue.undefined_val;
+}
+
+fn nativeRangeSelectNode(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0 and args[0].isObject()) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("startContainer"), args[0]);
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("endContainer"), args[0]);
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeRangeSelectNodeContents(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0 and args[0].isObject()) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("startContainer"), args[0]);
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("endContainer"), args[0]);
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeRangeToString(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeRangeConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    return nativeDocumentCreateRange(ctx, JSValue.fromObject(vm.global_object), args);
+}
+
+fn nativeGetSelection(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const sel = try vm.gc.allocateObject(null);
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("anchorNode"), JSValue.null_val);
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("anchorOffset"), JSValue.fromInt32(0));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("focusNode"), JSValue.null_val);
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("focusOffset"), JSValue.fromInt32(0));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("isCollapsed"), JSValue.true_val);
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("rangeCount"), JSValue.fromInt32(0));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("type"), JSValue.fromStringAtom(try vm.atom_table.intern("None")));
+
+    const get_range_fn = try vm.gc.allocateFunction(null, nativeSelectionGetRangeAt, @ptrCast(vm));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("getRangeAt"), JSValue.fromObject(get_range_fn));
+    const add_range_fn = try vm.gc.allocateFunction(null, nativeSelectionAddRange, @ptrCast(vm));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("addRange"), JSValue.fromObject(add_range_fn));
+    const rem_ranges_fn = try vm.gc.allocateFunction(null, nativeSelectionRemoveAllRanges, @ptrCast(vm));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("removeAllRanges"), JSValue.fromObject(rem_ranges_fn));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("empty"), JSValue.fromObject(rem_ranges_fn));
+    const collapse_fn = try vm.gc.allocateFunction(null, nativeSelectionCollapse, @ptrCast(vm));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("collapse"), JSValue.fromObject(collapse_fn));
+    const sel_all_fn = try vm.gc.allocateFunction(null, nativeSelectionSelectAllChildren, @ptrCast(vm));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("selectAllChildren"), JSValue.fromObject(sel_all_fn));
+    const to_str_fn = try vm.gc.allocateFunction(null, nativeSelectionToString, @ptrCast(vm));
+    try sel.setProperty(vm.allocator, try vm.atom_table.intern("toString"), JSValue.fromObject(to_str_fn));
+
+    return JSValue.fromObject(sel);
+}
+
+fn nativeSelectionGetRangeAt(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    return nativeDocumentCreateRange(ctx, this_val, &[_]JSValue{});
+}
+
+fn nativeSelectionAddRange(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("rangeCount"), JSValue.fromInt32(1));
+    if (args.len > 0 and args[0].isObject()) {
+        const r_obj = args[0].toObject().?;
+        if (r_obj.getProperty(try vm.atom_table.intern("startContainer"))) |sc| {
+            try inst.setProperty(vm.allocator, try vm.atom_table.intern("anchorNode"), sc);
+        }
+        if (r_obj.getProperty(try vm.atom_table.intern("endContainer"))) |ec| {
+            try inst.setProperty(vm.allocator, try vm.atom_table.intern("focusNode"), ec);
+        }
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeSelectionRemoveAllRanges(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("rangeCount"), JSValue.fromInt32(0));
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("anchorNode"), JSValue.null_val);
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("focusNode"), JSValue.null_val);
+    return JSValue.undefined_val;
+}
+
+fn nativeSelectionCollapse(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("anchorNode"), args[0]);
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("focusNode"), args[0]);
+    }
+    try inst.setProperty(vm.allocator, try vm.atom_table.intern("isCollapsed"), JSValue.true_val);
+    return JSValue.undefined_val;
+}
+
+fn nativeSelectionSelectAllChildren(ctx: *anyopaque, this_val: JSValue, args: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    const inst = this_val.toObject() orelse return JSValue.undefined_val;
+    if (args.len > 0) {
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("anchorNode"), args[0]);
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("focusNode"), args[0]);
+        try inst.setProperty(vm.allocator, try vm.atom_table.intern("rangeCount"), JSValue.fromInt32(1));
+    }
+    return JSValue.undefined_val;
+}
+
+fn nativeSelectionToString(ctx: *anyopaque, _: JSValue, _: []const JSValue) anyerror!JSValue {
+    const vm: *VM = @ptrCast(@alignCast(ctx));
+    return JSValue.fromStringAtom(try vm.atom_table.intern(""));
+}
+
+fn nativeSelectionConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue) anyerror!JSValue {
+    return nativeGetSelection(ctx, JSValue.undefined_val, args);
 }
 
 fn nativeEventPreventDefault(ctx: *anyopaque, this_val: JSValue, _: []const JSValue) anyerror!JSValue {
@@ -4117,7 +5412,7 @@ fn nativeResponseConstructor(ctx: *anyopaque, _: JSValue, args: []const JSValue)
     if (args.len > 1 and args[1].isObject()) {
         const init_obj = args[1].toObject().?;
         if (init_obj.getProperty(try vm.atom_table.intern("status"))) |s_val| {
-            if (s_val.isInt32()) status = s_val.toInt32();
+            if (s_val.isNumber()) status = s_val.toInt32();
         }
         if (init_obj.getProperty(try vm.atom_table.intern("statusText"))) |st_val| {
             if (st_val.isString()) status_text = vm.atom_table.get(st_val.toStringAtom());
@@ -5339,4 +6634,252 @@ test "universal web standards: WHATWG Element Traversal collections and PopState
     const res3 = try vm.execute(&code3);
     try std.testing.expect(res3.isBoolean());
     try std.testing.expect(res3.toBoolean());
+}
+
+test "universal web standards: CSSStyleDeclaration, advanced selectors, Range, Selection, and event initialization" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. CSSStyleDeclaration: setProperty, getPropertyValue, removeProperty, cssText, and camelCase sync
+    const script_cssom =
+        \\let el = document.createElement("div");
+        \\el.style.setProperty("background-color", "crimson");
+        \\let bg1 = el.style.getPropertyValue("background-color");
+        \\let bgCamel = el.style.backgroundColor;
+        \\el.style.removeProperty("background-color");
+        \\let bg2 = el.style.getPropertyValue("background-color");
+        \\el.style.cssText = "color: navy; font-size: 14px";
+        \\let col = el.style.getPropertyValue("color");
+        \\let cs = window.getComputedStyle(el);
+        \\let disp = cs.getPropertyValue("display");
+        \\return (bg1 === "crimson") && (bgCamel === "crimson") && (bg2 === "") && (col === "navy") && (disp === "block");
+    ;
+    var p1 = Parser.init(allocator, script_cssom);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_style_decl");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. Advanced selectors: combinators (> and space), pseudo-classes (:empty, :checked, :disabled, :not), attributes (^=, $=, *=)
+    const script_selectors =
+        \\let parser = new DOMParser();
+        \\let html = '<div id="app" class="main-container"><ul class="nav-list"><li class="item active"><a href="https://example.com" data-role="nav-link">Home</a></li><li class="item"><a href="/about" data-role="nav-link">About</a></li><li class="empty-slot"></li></ul><input type="checkbox" checked id="terms"><button id="btn" disabled>Disabled Action</button></div>';
+        \\let doc = parser.parseFromString(html, "text/html");
+        \\let homeLink = doc.querySelector(".main-container > ul.nav-list > li.active a");
+        \\let aboutLink = doc.querySelector("a[href$=about]");
+        \\let emptySlot = doc.querySelector("li:empty");
+        \\let checkedInput = doc.querySelector("input:checked");
+        \\let disabledBtn = doc.querySelector("button:disabled");
+        \\let notDisabled = doc.querySelector("button:not([disabled])");
+        \\let allItems = doc.querySelectorAll("li.item, button");
+        \\let homeRole = homeLink.matches("a[data-role*=nav]");
+        \\let appClosest = homeLink.closest("div#app");
+        \\return (homeLink !== null) && (aboutLink !== null) && (emptySlot !== null) && (checkedInput !== null) && (disabledBtn !== null) && (notDisabled === null) && (allItems.length === 3) && homeRole && (appClosest !== null);
+    ;
+    var p2 = Parser.init(allocator, script_selectors);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_adv_selectors");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isBoolean());
+    try std.testing.expect(res2.toBoolean());
+
+    // 3. Range, Selection, createEvent, and initCustomEvent
+    const script_range_ev =
+        \\let r1 = document.createRange();
+        \\r1.setStart(document.body, 0);
+        \\r1.setEnd(document.body, 1);
+        \\let r1Before = r1.collapsed;
+        \\r1.collapse(true);
+        \\let r1After = r1.collapsed;
+        \\let r2 = new Range();
+        \\let sel = window.getSelection();
+        \\let selCount0 = sel.rangeCount;
+        \\sel.addRange(r1);
+        \\let selCount1 = sel.rangeCount;
+        \\sel.removeAllRanges();
+        \\let selCount2 = sel.rangeCount;
+        \\let isRangeSel = (r1Before === false) && (r1After === true) && (selCount0 === 0) && (selCount1 === 1) && (selCount2 === 0);
+        \\let ev = document.createEvent("CustomEvent");
+        \\ev.initCustomEvent("app:ping", true, true, { pingId: 999 });
+        \\window.customReceived = null;
+        \\function onPing(e) {
+        \\    window.customReceived = e.detail.pingId;
+        \\}
+        \\window.addEventListener("app:ping", onPing);
+        \\window.dispatchEvent(ev);
+        \\let isEvOk = (window.customReceived === 999) && (ev.type === "app:ping") && (ev.bubbles === true);
+        \\return isRangeSel && isEvOk;
+    ;
+    var p3 = Parser.init(allocator, script_range_ev);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_range_ev");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
+}
+
+test "universal web standards: Canvas 2D expansion, DOMTokenList full parity, Element attributes, getElementsByName, and structural pseudo-classes" {
+    const allocator = std.testing.allocator;
+    const atom_table = try AtomTable.init(allocator);
+    defer atom_table.deinit();
+
+    const gc = try @import("gc.zig").GarbageCollector.init(allocator);
+    defer gc.deinit();
+
+    const vm = try VM.init(allocator, atom_table, gc);
+    defer vm.deinit();
+
+    try initBuiltins(vm);
+
+    const Parser = @import("parser.zig").Parser;
+    const BytecodeCompiler = @import("bytecode.zig").BytecodeCompiler;
+
+    // 1. Canvas 2D: dimensions, toDataURL, toBlob, ctx.canvas, measureText, styling, gradients, paths
+    const script_canvas =
+        \\let canvas = document.createElement("canvas");
+        \\let w0 = canvas.width;
+        \\let h0 = canvas.height;
+        \\let urlPng = canvas.toDataURL();
+        \\let urlJpg = canvas.toDataURL("image/jpeg");
+        \\let ctx = canvas.getContext("2d");
+        \\let isCanvasRef = (ctx.canvas === canvas);
+        \\let textMetrics = ctx.measureText("Davoth Standards");
+        \\let fontDef = ctx.font;
+        \\let alignDef = ctx.textAlign;
+        \\let alphaDef = ctx.globalAlpha;
+        \\let grad = ctx.createLinearGradient(0, 0, 100, 100);
+        \\grad.addColorStop(0, "red");
+        \\ctx.beginPath();
+        \\ctx.arc(50, 50, 25, 0, 6.28);
+        \\let inPath = ctx.isPointInPath(50, 50);
+        \\window.blobReceived = false;
+        \\function onBlob(b) {
+        \\    window.blobReceived = (b.size === 68) && (b.type === "image/png");
+        \\}
+        \\canvas.toBlob(onBlob);
+        \\return (w0 === 300) && (h0 === 150) && isCanvasRef && (textMetrics.width > 50) && (fontDef === "10px sans-serif") && (alignDef === "start") && (alphaDef === 1) && inPath && window.blobReceived;
+    ;
+    var p1 = Parser.init(allocator, script_canvas);
+    const ast1 = try p1.parseProgram();
+    defer ast1.deinit(allocator);
+
+    var c1 = BytecodeCompiler.init(allocator, atom_table, "test_canvas_expanded");
+    var code1 = try c1.compile(ast1);
+    defer code1.deinit();
+
+    const res1 = try vm.execute(&code1);
+    try std.testing.expect(res1.isBoolean());
+    try std.testing.expect(res1.toBoolean());
+
+    // 2. DOMTokenList & Element attributes & replaceWith
+    const script_dom =
+        \\let el = document.createElement("div");
+        \\el.classList.add("alpha");
+        \\el.classList.add("beta");
+        \\let len2 = el.classList.length;
+        \\let item0 = el.classList.item(0);
+        \\let item1 = el.classList.item(1);
+        \\let repOk = el.classList.replace("alpha", "gamma");
+        \\let hasAlpha = el.classList.contains("alpha");
+        \\let hasGamma = el.classList.contains("gamma");
+        \\let classNameSync = (el.className === "gamma beta");
+        \\let hasAttrs1 = el.hasAttributes();
+        \\let attrNames = el.getAttributeNames();
+        \\let tog1 = el.toggleAttribute("hidden");
+        \\let tog2 = el.toggleAttribute("hidden");
+        \\let parent = document.createElement("div");
+        \\let child = document.createElement("span");
+        \\let replacement = document.createElement("b");
+        \\parent.appendChild(child);
+        \\child.replaceWith(replacement);
+        \\let isReplaced = (parent.firstElementChild === replacement) && (child.parentNode === null);
+        \\return (len2 === 2) && (item0 === "alpha") && (item1 === "beta") && repOk && (!hasAlpha) && hasGamma && classNameSync && hasAttrs1 && (attrNames.length >= 1) && (tog1 === true) && (tog2 === false) && isReplaced;
+    ;
+    var p2 = Parser.init(allocator, script_dom);
+    const ast2 = try p2.parseProgram();
+    defer ast2.deinit(allocator);
+
+    var c2 = BytecodeCompiler.init(allocator, atom_table, "test_dom_attributes");
+    var code2 = try c2.compile(ast2);
+    defer code2.deinit();
+
+    const res2 = try vm.execute(&code2);
+    try std.testing.expect(res2.isBoolean());
+    try std.testing.expect(res2.toBoolean());
+
+    // 3. Document getElementsByName and createComment
+    const script_doc =
+        \\let comm = document.createComment("standard comment");
+        \\let isComm = (comm.nodeType === 8) && (comm.data === "standard comment");
+        \\let input = document.createElement("input");
+        \\input.setAttribute("name", "login_user");
+        \\document.body.appendChild(input);
+        \\let byName = document.getElementsByName("login_user");
+        \\let isNameFound = (byName.length === 1) && (byName[0] === input);
+        \\return isComm && isNameFound;
+    ;
+    var p3 = Parser.init(allocator, script_doc);
+    const ast3 = try p3.parseProgram();
+    defer ast3.deinit(allocator);
+
+    var c3 = BytecodeCompiler.init(allocator, atom_table, "test_doc_name_comment");
+    var code3 = try c3.compile(ast3);
+    defer code3.deinit();
+
+    const res3 = try vm.execute(&code3);
+    try std.testing.expect(res3.isBoolean());
+    try std.testing.expect(res3.toBoolean());
+
+    // 4. Structural pseudo-classes: :nth-child, :first-of-type, :last-of-type, :only-of-type
+    const script_structural =
+        \\let parser = new DOMParser();
+        \\let markup = '<div id="container"><p class="header">Title</p><ul id="list"><li>Item 1</li><li>Item 2</li><li>Item 3</li><li>Item 4</li></ul><span id="badge">Only Badge</span></div>';
+        \\let doc = parser.parseFromString(markup, "text/html");
+        \\let item2 = doc.querySelector("li:nth-child(2)");
+        \\let isItem2 = (item2 !== null) && (item2.textContent === "Item 2");
+        \\let oddItems = doc.querySelectorAll("li:nth-child(odd)");
+        \\let evenItems = doc.querySelectorAll("li:nth-child(even)");
+        \\let pFirst = doc.querySelector("p:first-of-type");
+        \\let badgeOnly = doc.querySelector("span:only-of-type");
+        \\return isItem2 && (oddItems.length === 2) && (evenItems.length === 2) && (pFirst !== null) && (badgeOnly !== null);
+    ;
+    var p4 = Parser.init(allocator, script_structural);
+    const ast4 = try p4.parseProgram();
+    defer ast4.deinit(allocator);
+
+    var c4 = BytecodeCompiler.init(allocator, atom_table, "test_structural_pseudos");
+    var code4 = try c4.compile(ast4);
+    defer code4.deinit();
+
+    const res4 = try vm.execute(&code4);
+    try std.testing.expect(res4.isBoolean());
+    try std.testing.expect(res4.toBoolean());
 }

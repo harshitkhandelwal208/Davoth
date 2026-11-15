@@ -590,20 +590,40 @@ pub const Parser = struct {
             var callee = try self.parsePrimary();
             errdefer callee.deinit(self.allocator);
 
-            while (self.match(.Dot)) {
-                const prop_name = self.current.lexeme;
-                try self.consume(.Identifier, "Expected property name after '.'");
-                const member_node = try self.allocator.create(Node);
-                member_node.* = .{
-                    .data = .{
-                        .Member = .{
-                            .object = callee,
-                            .property = prop_name,
-                            .computed = false,
+            while (true) {
+                if (self.match(.Dot)) {
+                    const prop_name = self.current.lexeme;
+                    try self.consume(.Identifier, "Expected property name after '.'");
+                    const member_node = try self.allocator.create(Node);
+                    member_node.* = .{
+                        .data = .{
+                            .Member = .{
+                                .object = callee,
+                                .property = prop_name,
+                                .property_expr = null,
+                                .computed = false,
+                            },
                         },
-                    },
-                };
-                callee = member_node;
+                    };
+                    callee = member_node;
+                } else if (self.match(.LBracket)) {
+                    const prop_expr = try self.parseExpression();
+                    try self.consume(.RBracket, "Expected ']' after computed member access");
+                    const member_node = try self.allocator.create(Node);
+                    member_node.* = .{
+                        .data = .{
+                            .Member = .{
+                                .object = callee,
+                                .property = "",
+                                .property_expr = prop_expr,
+                                .computed = true,
+                            },
+                        },
+                    };
+                    callee = member_node;
+                } else {
+                    break;
+                }
             }
 
             if (self.match(.LParen)) {
@@ -695,7 +715,23 @@ pub const Parser = struct {
                         .Member = .{
                             .object = expr,
                             .property = prop_name,
+                            .property_expr = null,
                             .computed = false,
+                        },
+                    },
+                };
+                expr = member_node;
+            } else if (self.match(.LBracket)) {
+                const prop_expr = try self.parseExpression();
+                try self.consume(.RBracket, "Expected ']' after computed member access");
+                const member_node = try self.allocator.create(Node);
+                member_node.* = .{
+                    .data = .{
+                        .Member = .{
+                            .object = expr,
+                            .property = "",
+                            .property_expr = prop_expr,
+                            .computed = true,
                         },
                     },
                 };

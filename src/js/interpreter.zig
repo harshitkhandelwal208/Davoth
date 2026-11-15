@@ -184,6 +184,48 @@ pub const VM = struct {
                     }
                     try self.push(val);
                 },
+                .GetElem => {
+                    const key_val = self.pop();
+                    const target = self.pop();
+                    self.last_this = target;
+                    if (target.toObject()) |obj| {
+                        var atom_opt: ?AtomId = null;
+                        if (key_val.isString()) {
+                            atom_opt = key_val.toStringAtom();
+                        } else if (key_val.isNumber()) {
+                            var buf: [32]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{key_val.toInt32()}) catch "0";
+                            atom_opt = try self.atom_table.intern(s);
+                        }
+                        if (atom_opt) |atom| {
+                            const val = obj.getProperty(atom) orelse JSValue.undefined_val;
+                            try self.push(val);
+                        } else {
+                            try self.push(JSValue.undefined_val);
+                        }
+                    } else {
+                        try self.push(JSValue.undefined_val);
+                    }
+                },
+                .SetElem => {
+                    const val = self.pop();
+                    const key_val = self.pop();
+                    const target = self.pop();
+                    if (target.toObject()) |obj| {
+                        var atom_opt: ?AtomId = null;
+                        if (key_val.isString()) {
+                            atom_opt = key_val.toStringAtom();
+                        } else if (key_val.isNumber()) {
+                            var buf: [32]u8 = undefined;
+                            const s = std.fmt.bufPrint(&buf, "{d}", .{key_val.toInt32()}) catch "0";
+                            atom_opt = try self.atom_table.intern(s);
+                        }
+                        if (atom_opt) |atom| {
+                            try obj.setProperty(self.allocator, atom, val);
+                        }
+                    }
+                    try self.push(val);
+                },
                 .Add => {
                     const b = self.pop();
                     const a = self.pop();
@@ -239,7 +281,13 @@ pub const VM = struct {
                 .NotEqual, .StrictNotEqual => {
                     const b = self.pop();
                     const a = self.pop();
-                    try self.push(JSValue.fromBoolean(a.raw != b.raw));
+                    if (a.isInt32() and b.isInt32()) {
+                        try self.push(JSValue.fromBoolean(a.toInt32() != b.toInt32()));
+                    } else if (a.isFloat64() or b.isFloat64()) {
+                        try self.push(JSValue.fromBoolean(a.toFloat64() != b.toFloat64()));
+                    } else {
+                        try self.push(JSValue.fromBoolean(a.raw != b.raw));
+                    }
                 },
                 .Less => {
                     const b = self.pop();
